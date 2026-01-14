@@ -2,6 +2,7 @@
 #include <EEPROM.h>
 #include <LiquidCrystal_I2C.h>
 #include <SoftwareSerial.h>
+#include <TMCStepper.h>
 
 // LCD 2004A (HD44780) with I2C backpack
 const int LCD_I2C_ADDRESS = 0x27;
@@ -18,9 +19,8 @@ const int DIR_PIN = 6;
 const int EN_PIN = 7; // active LOW for most drivers
 
 // Optional UART configuration using TMCStepper library
-#define USE_TMC2209_UART 0
+#define USE_TMC2209_UART 1
 #if USE_TMC2209_UART
-#include <TMCStepper.h>
 const int TMC_UART_RX = A0;
 const int TMC_UART_TX = A1;
 const int TMC_UART_ADDRESS = 0;
@@ -90,7 +90,7 @@ int turnsDigits[TURN_DIGITS] = {0, 0, 0, 0, 0};
 int rpmDigits[RPM_DIGITS] = {0, 2, 0, 0};
 
 volatile int encoderDelta = 0;
-int lastEncA = LOW;
+volatile uint8_t encoderState = 0;
 
 unsigned long buttonDownMs = 0;
 bool buttonWasDown = false;
@@ -426,16 +426,6 @@ void updateStepInterval() {
   stepIntervalMicros = (unsigned long)(1000000.0f / stepsPerSecond);
 }
 
-void rampSpeed() {
-  if (currentRpm < targetRpm) {
-    currentRpm += 5;
-    if (currentRpm > targetRpm) {
-      currentRpm = targetRpm;
-    }
-    updateStepInterval();
-  }
-}
-
 void stepMotor() {
   if (stepIntervalMicros == 0) {
     return;
@@ -450,13 +440,13 @@ void stepMotor() {
   }
 }
 
-void handleEncoder() {
-  int encA = digitalRead(ENC_A);
-  int encB = digitalRead(ENC_B);
-  if (encA != lastEncA && encA == HIGH) {
-    encoderDelta += (encB == LOW) ? 1 : -1;
-  }
-  lastEncA = encA;
+void handleEncoderInterrupt() {
+  uint8_t state = (digitalRead(ENC_A) << 1) | digitalRead(ENC_B);
+  uint8_t combined = (encoderState << 2) | state;
+  static const int8_t table[16] = {0, -1, 1, 0, 1, 0, 0, -1,
+                                   -1, 0, 0, 1, 0, 1, -1, 0};
+  encoderDelta += table[combined];
+  encoderState = state;
 }
 
 ButtonEvent readButton() {
@@ -512,6 +502,10 @@ void setup() {
   syncDigitsFromTargets();
   blinkTickMs = millis();
   drawManualScreen();
+
+  encoderState = (digitalRead(ENC_A) << 1) | digitalRead(ENC_B);
+  attachInterrupt(digitalPinToInterrupt(ENC_A), handleEncoderInterrupt, CHANGE);
+  attachInterrupt(digitalPinToInterrupt(ENC_B), handleEncoderInterrupt, CHANGE);
 }
 
 void redrawForBlink() {
@@ -537,9 +531,13 @@ void redrawForBlink() {
 }
 
 void loop() {
-  handleEncoder();
   ButtonEvent buttonEvent = readButton();
   unsigned long nowMs = millis();
+  int delta = 0;
+  noInterrupts();
+  delta = encoderDelta;
+  encoderDelta = 0;
+  interrupts();
   bool allowBlink = (screenMode == SCREEN_MANUAL && manualField <= 2) ||
                     (screenMode == SCREEN_PRESET_NEW) ||
                     (screenMode == SCREEN_PRESET_NAME);
@@ -560,17 +558,16 @@ void loop() {
   }
 
   if (screenMode == SCREEN_MANUAL) {
-    if (encoderDelta != 0) {
+    if (delta != 0) {
       if (manualField == 0) {
-        turnsDigits[manualDigitIndex] = wrapDigit(turnsDigits[manualDigitIndex], encoderDelta);
+        turnsDigits[manualDigitIndex] = wrapDigit(turnsDigits[manualDigitIndex], delta);
         targetTurns = digitsToValue(turnsDigits, TURN_DIGITS);
       } else if (manualField == 1) {
-        rpmDigits[manualDigitIndex] = wrapDigit(rpmDigits[manualDigitIndex], encoderDelta);
+        rpmDigits[manualDigitIndex] = wrapDigit(rpmDigits[manualDigitIndex], delta);
         targetRpm = digitsToValue(rpmDigits, RPM_DIGITS);
       } else if (manualField == 2) {
-        targetDirectionCW = encoderDelta > 0 ? true : false;
+        targetDirectionCW = delta > 0 ? true : false;
       }
-      encoderDelta = 0;
       drawManualScreen();
     }
 
@@ -599,7 +596,7 @@ void loop() {
       } else {
         screenMode = SCREEN_COUNTDOWN;
         currentSteps = 0;
-        currentRpm = 0;
+        currentRpm = targetRpm;
         windingPaused = false;
         targetSteps = targetTurns * STEPS_PER_REV;
         enableDriver(false);
@@ -619,9 +616,8 @@ void loop() {
   } else if (screenMode == SCREEN_PRESET_LIST) {
     blinkDirty = false;
     int maxIndex = MAX_PRESETS;
-    if (encoderDelta != 0) {
-      menuIndex = constrain(menuIndex + encoderDelta, 0, maxIndex);
-      encoderDelta = 0;
+    if (delta != 0) {
+      menuIndex = constrain(menuIndex + delta, 0, maxIndex);
       drawPresetListScreen();
     }
     if (buttonEvent == BTN_CLICK) {
@@ -645,17 +641,16 @@ void loop() {
       drawManualScreen();
     }
   } else if (screenMode == SCREEN_PRESET_NEW) {
-    if (encoderDelta != 0) {
+    if (delta != 0) {
       if (presetField == 0) {
-        turnsDigits[presetDigitIndex] = wrapDigit(turnsDigits[presetDigitIndex], encoderDelta);
+        turnsDigits[presetDigitIndex] = wrapDigit(turnsDigits[presetDigitIndex], delta);
         targetTurns = digitsToValue(turnsDigits, TURN_DIGITS);
       } else if (presetField == 1) {
-        rpmDigits[presetDigitIndex] = wrapDigit(rpmDigits[presetDigitIndex], encoderDelta);
+        rpmDigits[presetDigitIndex] = wrapDigit(rpmDigits[presetDigitIndex], delta);
         targetRpm = digitsToValue(rpmDigits, RPM_DIGITS);
       } else if (presetField == 2) {
-        targetDirectionCW = encoderDelta > 0 ? true : false;
+        targetDirectionCW = delta > 0 ? true : false;
       }
-      encoderDelta = 0;
       drawPresetNewScreen();
     }
 
@@ -690,9 +685,8 @@ void loop() {
       drawPresetListScreen();
     }
   } else if (screenMode == SCREEN_PRESET_NAME) {
-    if (encoderDelta != 0) {
-      presetName[nameIndex] = nextNameChar(presetName[nameIndex], encoderDelta);
-      encoderDelta = 0;
+    if (delta != 0) {
+      presetName[nameIndex] = nextNameChar(presetName[nameIndex], delta);
       drawPresetNameScreen();
     }
 
@@ -730,7 +724,7 @@ void loop() {
 
       screenMode = SCREEN_COUNTDOWN;
       currentSteps = 0;
-      currentRpm = 0;
+      currentRpm = targetRpm;
       windingPaused = false;
       targetSteps = targetTurns * STEPS_PER_REV;
       enableDriver(false);
@@ -751,6 +745,8 @@ void loop() {
       screenMode = SCREEN_WINDING;
       enableDriver(true);
       lcd.clear();
+      currentRpm = targetRpm;
+      updateStepInterval();
       windingUpdateMs = nowMs;
       drawWindingScreen();
       return;
@@ -763,6 +759,8 @@ void loop() {
         screenMode = SCREEN_WINDING;
         enableDriver(true);
         lcd.clear();
+        currentRpm = targetRpm;
+        updateStepInterval();
         windingUpdateMs = nowMs;
         drawWindingScreen();
       } else {
@@ -798,7 +796,6 @@ void loop() {
     if (windingPaused) {
       return;
     }
-    rampSpeed();
     stepMotor();
     if (currentSteps >= targetSteps) {
       enableDriver(false);
