@@ -81,6 +81,7 @@ bool windingPaused = false;
 bool blinkOn = true;
 unsigned long blinkTickMs = 0;
 bool blinkDirty = false;
+unsigned long windingUpdateMs = 0;
 
 long targetTurns = 1000;
 int targetRpm = 200;
@@ -101,6 +102,7 @@ volatile long currentSteps = 0;
 int currentRpm = 0;
 volatile bool stepLevel = false;
 volatile bool stepEnabled = false;
+const unsigned long WINDING_UI_INTERVAL_MS = 500;
 
 // 42STH60-2004Q: 1.8° step angle => 200 full steps/rev
 const int MICROSTEP = 8; // 1,2,4,8,16... match driver microstep setting
@@ -367,6 +369,17 @@ void drawWindingScreen() {
   printPadded(line);
   lcd.setCursor(0, 3);
   printPadded("Press: pause");
+}
+
+void drawWindingProgressLine() {
+  lcd.setCursor(0, 1);
+  char line[21];
+  long stepsSnapshot = 0;
+  noInterrupts();
+  stepsSnapshot = currentSteps;
+  interrupts();
+  snprintf(line, sizeof(line), "Turns: %ld/%ld", stepsSnapshot / STEPS_PER_REV, targetTurns);
+  printPadded(line);
 }
 
 void drawCountdownScreen() {
@@ -824,6 +837,7 @@ void loop() {
     }
     if (nowMs - countdownTickMs >= 1000) {
       countdownTickMs = nowMs;
+      windingUpdateMs = nowMs;
       countdownValue--;
       if (countdownValue < 0) {
         clampTargets();
@@ -832,6 +846,7 @@ void loop() {
         lcd.clear();
         currentRpm = targetRpm;
         startStepTimer(currentRpm);
+        windingUpdateMs = nowMs;
         drawWindingScreen();
       } else {
         drawCountdownScreen();
@@ -877,6 +892,9 @@ void loop() {
       enableDriver(false);
       screenMode = SCREEN_DONE;
       drawDoneScreen();
+    } else if (nowMs - windingUpdateMs >= WINDING_UI_INTERVAL_MS) {
+      windingUpdateMs = nowMs;
+      drawWindingProgressLine();
       drawWindingScreen();
     }
   } else if (screenMode == SCREEN_DONE) {
