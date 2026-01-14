@@ -17,15 +17,16 @@ const int STEP_PIN = 5;
 const int DIR_PIN = 6;
 const int EN_PIN = 7; // active LOW for most drivers
 
-// Optional UART configuration using janelia-arduino/TMC2209 library
+// Optional UART configuration using TMCStepper library
 #define USE_TMC2209_UART 0
 #if USE_TMC2209_UART
-#include <TMC2209.h>
+#include <TMCStepper.h>
 const int TMC_UART_RX = A0;
 const int TMC_UART_TX = A1;
 const int TMC_UART_ADDRESS = 0;
+const float TMC_R_SENSE = 0.11f;
 SoftwareSerial tmcSerial(TMC_UART_RX, TMC_UART_TX);
-TMC2209 tmcDriver;
+TMC2209Stepper tmcDriver(&tmcSerial, TMC_R_SENSE, TMC_UART_ADDRESS);
 #endif
 
 // Winding settings
@@ -407,10 +408,11 @@ void enableDriver(bool enable) {
 void setupTmc2209Uart() {
 #if USE_TMC2209_UART
   tmcSerial.begin(115200);
-  tmcDriver.setup(tmcSerial, TMC_UART_ADDRESS);
-  tmcDriver.setMicrostepsPerStep(MICROSTEP);
-  tmcDriver.setRunCurrent(600);
-  tmcDriver.enable();
+  tmcDriver.begin();
+  tmcDriver.toff(4);
+  tmcDriver.rms_current(600);
+  tmcDriver.microsteps(MICROSTEP);
+  tmcDriver.pwm_autoscale(true);
 #endif
 }
 

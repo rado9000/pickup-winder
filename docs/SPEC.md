@@ -76,4 +76,4 @@
 - Silnik testowy: **42STH60-2004Q** (1.8° = 200 kroków/obrót). W kodzie `MICROSTEP` ustawia mikrokrok, a `STEPS_PER_REV = 200 * MICROSTEP`.
 - Dla **gładkiej pracy** ustaw mikrokrok np. **1/8** (w kodzie `MICROSTEP = 8`) i dopasuj MS/CFG do 1/8.
 - Dla **maksymalnych obrotów** ustaw **pełny krok (1/1)**: MS1=LOW, MS2=LOW, MS3=LOW (jeśli moduł ma 3 piny). W TMC2209 zwykle są piny **CFG1/CFG2** – oba LOW oznaczają pełny krok; jeśli moduł ma CFG3/MS3, również ustaw LOW.
-- Dla sterowania przez UART z biblioteką **janelia-arduino/TMC2209** ustaw `USE_TMC2209_UART = 1` w kodzie i podłącz RX/TX do A0/A1 (można zmienić w kodzie). Dopasuj prąd silnika i mikrokrok w `setupTmc2209Uart()`.
+- Dla sterowania przez UART z biblioteką **TMCStepper** ustaw `USE_TMC2209_UART = 1` w kodzie i podłącz RX/TX do A0/A1 (można zmienić w kodzie). Dopasuj prąd silnika, mikrokrok i `R_SENSE` w `setupTmc2209Uart()`.
