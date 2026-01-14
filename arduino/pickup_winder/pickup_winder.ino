@@ -88,7 +88,8 @@ unsigned long lastStepMicros = 0;
 unsigned long stepIntervalMicros = 0;
 
 // 42STH60-2004Q: 1.8° step angle => 200 full steps/rev
-const int STEPS_PER_REV = 200; // change if microstepping
+const int MICROSTEP = 8; // 1,2,4,8,16... match driver microstep setting
+const int STEPS_PER_REV = 200 * MICROSTEP;
 
 void loadPresets() {
   int addr = 0;
@@ -446,7 +447,10 @@ void loop() {
   handleEncoder();
   ButtonEvent buttonEvent = readButton();
   unsigned long nowMs = millis();
-  if (nowMs - blinkTickMs >= 500) {
+  bool allowBlink = (screenMode == SCREEN_MANUAL && manualField <= 2) ||
+                    (screenMode == SCREEN_PRESET_NEW) ||
+                    (screenMode == SCREEN_PRESET_NAME);
+  if (allowBlink && nowMs - blinkTickMs >= 500) {
     blinkTickMs = nowMs;
     blinkOn = !blinkOn;
     blinkDirty = true;
@@ -513,10 +517,7 @@ void loop() {
       drawPresetListScreen();
     }
   } else if (screenMode == SCREEN_PRESET_LIST) {
-    if (blinkDirty) {
-      drawPresetListScreen();
-      blinkDirty = false;
-    }
+    blinkDirty = false;
     int maxIndex = MAX_PRESETS;
     if (encoderDelta != 0) {
       menuIndex = constrain(menuIndex + encoderDelta, 0, maxIndex);
@@ -628,10 +629,7 @@ void loop() {
       drawPresetListScreen();
     }
   } else if (screenMode == SCREEN_PRESET_VIEW) {
-    if (blinkDirty) {
-      drawPresetViewScreen();
-      blinkDirty = false;
-    }
+    blinkDirty = false;
     if (buttonEvent == BTN_CLICK) {
       targetTurns = presets[presetIndex].turns;
       targetRpm = presets[presetIndex].rpm;
@@ -654,10 +652,7 @@ void loop() {
       drawPresetListScreen();
     }
   } else if (screenMode == SCREEN_COUNTDOWN) {
-    if (blinkDirty) {
-      drawCountdownScreen();
-      blinkDirty = false;
-    }
+    blinkDirty = false;
     if (buttonEvent == BTN_CLICK) {
       clampTargets();
       screenMode = SCREEN_WINDING;
@@ -678,14 +673,7 @@ void loop() {
       }
     }
   } else if (screenMode == SCREEN_WINDING) {
-    if (blinkDirty) {
-      if (windingPaused) {
-        drawPausedScreen();
-      } else {
-        drawWindingScreen();
-      }
-      blinkDirty = false;
-    }
+    blinkDirty = false;
     if (buttonEvent == BTN_LONG && windingPaused) {
       enableDriver(false);
       screenMode = SCREEN_MANUAL;
@@ -722,10 +710,7 @@ void loop() {
       drawWindingScreen();
     }
   } else if (screenMode == SCREEN_DONE) {
-    if (blinkDirty) {
-      drawDoneScreen();
-      blinkDirty = false;
-    }
+    blinkDirty = false;
     if (buttonEvent == BTN_CLICK) {
       screenMode = SCREEN_MANUAL;
       manualField = 0;
