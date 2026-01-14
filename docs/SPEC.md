@@ -3,8 +3,9 @@
 ## Założenia funkcjonalne
 
 - **Tryb Manual** (start po uruchomieniu):
-  - wybór liczby zwojów, prędkości (RPM) i kierunku,
-  - kliknięcie przechodzi między polami,
+  - wybór liczby zwojów (5 cyfr) i prędkości (4 cyfry) oraz kierunku,
+  - obrót zmienia aktywną cyfrę,
+  - kliknięcie przechodzi do kolejnej cyfry, a po niej do następnego pola,
   - pole **Start winding** uruchamia nawijanie,
   - dłuższe przytrzymanie otwiera **Presets**.
 - **Menu Presets**:
@@ -12,7 +13,7 @@
   - poniżej zapisane presety,
   - dłuższe przytrzymanie wraca do Manual.
 - **New preset**:
-  - pytania o liczbę zwojów, kierunek i prędkość,
+  - pytania o liczbę zwojów, kierunek i prędkość (edycja cyfr),
   - następnie edycja nazwy (obrót = zmiana znaku, klik = kolejny znak),
   - dłuższe przytrzymanie zapisuje do EEPROM.
 - **Uruchomienie presetów**:
@@ -26,6 +27,8 @@
 - **Stop/Resume**:
   - kliknięcie w trakcie nawijania zatrzymuje silnik,
   - kolejne kliknięcie uruchamia odliczanie 3..0 i wznawia nawijanie.
+- **Wyjście do menu po pauzie**:
+  - dłuższe przytrzymanie podczas pauzy wraca do Manual.
 - **Odliczanie startu**:
   - każde uruchomienie nawijania (manual i preset) wyświetla 3..0.
 
@@ -65,3 +68,4 @@
 - Kod startuje w **Manual mode**.
 - Menu jest na enkoderze: obrót = zmiana wartości/pozycji, klik = akceptacja.
 - Soft start: zwiększanie RPM przy starcie w krokach co kilka ms.
+- Zakresy: 1–99999 zwojów oraz 1–2000 RPM.
