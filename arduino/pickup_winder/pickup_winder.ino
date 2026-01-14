@@ -1,6 +1,7 @@
 #include <Arduino.h>
 #include <EEPROM.h>
 #include <LiquidCrystal_I2C.h>
+#include <SoftwareSerial.h>
 
 // LCD 2004A (HD44780) with I2C backpack
 const int LCD_I2C_ADDRESS = 0x27;
@@ -15,6 +16,17 @@ const int ENC_BTN = 4;
 const int STEP_PIN = 5;
 const int DIR_PIN = 6;
 const int EN_PIN = 7; // active LOW for most drivers
+
+// Optional UART configuration using janelia-arduino/TMC2209 library
+#define USE_TMC2209_UART 0
+#if USE_TMC2209_UART
+#include <TMC2209.h>
+const int TMC_UART_RX = A0;
+const int TMC_UART_TX = A1;
+const int TMC_UART_ADDRESS = 0;
+SoftwareSerial tmcSerial(TMC_UART_RX, TMC_UART_TX);
+TMC2209 tmcDriver;
+#endif
 
 // Winding settings
 const int MAX_PRESETS = 8;
@@ -392,6 +404,16 @@ void enableDriver(bool enable) {
   digitalWrite(EN_PIN, enable ? LOW : HIGH);
 }
 
+void setupTmc2209Uart() {
+#if USE_TMC2209_UART
+  tmcSerial.begin(115200);
+  tmcDriver.setup(tmcSerial, TMC_UART_ADDRESS);
+  tmcDriver.setMicrostepsPerStep(MICROSTEP);
+  tmcDriver.setRunCurrent(600);
+  tmcDriver.enable();
+#endif
+}
+
 void updateStepInterval() {
   if (currentRpm <= 0) {
     stepIntervalMicros = 0;
@@ -483,6 +505,7 @@ void setup() {
   lcd.clear();
 
   enableDriver(false);
+  setupTmc2209Uart();
   loadPresets();
   syncDigitsFromTargets();
   blinkTickMs = millis();
