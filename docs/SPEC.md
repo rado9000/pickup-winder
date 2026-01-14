@@ -71,3 +71,5 @@
 - Menu jest na enkoderze: obrót = zmiana wartości/pozycji, klik = akceptacja.
 - Soft start: zwiększanie RPM przy starcie w krokach co kilka ms.
 - Zakresy: 1–99999 zwojów oraz 1–2000 RPM.
+- Silnik testowy: **42STH60-2004Q** (1.8° = 200 kroków/obrót), `STEPS_PER_REV = 200`.
+- Dla maksymalnych obrotów ustaw **pełny krok (1/1)**: MS1=LOW, MS2=LOW, MS3=LOW (jeśli moduł ma 3 piny). W TMC2209 zwykle są piny **CFG1/CFG2** – oba LOW oznaczają pełny krok; jeśli moduł ma CFG3/MS3, również ustaw LOW.

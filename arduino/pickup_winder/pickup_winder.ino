@@ -87,6 +87,7 @@ int currentRpm = 0;
 unsigned long lastStepMicros = 0;
 unsigned long stepIntervalMicros = 0;
 
+// 42STH60-2004Q: 1.8° step angle => 200 full steps/rev
 const int STEPS_PER_REV = 200; // change if microstepping
 
 void loadPresets() {
