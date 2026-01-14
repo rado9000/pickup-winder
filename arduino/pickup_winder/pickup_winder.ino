@@ -68,6 +68,7 @@ bool windingPaused = false;
 bool blinkOn = true;
 unsigned long blinkTickMs = 0;
 bool blinkDirty = false;
+unsigned long windingUpdateMs = 0;
 
 long targetTurns = 1000;
 int targetRpm = 200;
@@ -338,7 +339,6 @@ void drawPresetViewScreen() {
 }
 
 void drawWindingScreen() {
-  lcd.clear();
   lcd.setCursor(0, 0);
   printPadded("Winding...");
   lcd.setCursor(0, 1);
@@ -348,6 +348,8 @@ void drawWindingScreen() {
   lcd.setCursor(0, 2);
   snprintf(line, sizeof(line), "RPM: %d", currentRpm);
   printPadded(line);
+  lcd.setCursor(0, 3);
+  printPadded("Press: pause");
 }
 
 void drawCountdownScreen() {
@@ -361,7 +363,6 @@ void drawCountdownScreen() {
 }
 
 void drawPausedScreen() {
-  lcd.clear();
   lcd.setCursor(0, 0);
   printPadded("Paused");
   lcd.setCursor(0, 1);
@@ -581,6 +582,7 @@ void loop() {
         updateStepInterval();
         countdownValue = 3;
         countdownTickMs = millis();
+        windingUpdateMs = millis();
         drawCountdownScreen();
       }
     } else if (buttonEvent == BTN_LONG) {
@@ -711,6 +713,7 @@ void loop() {
       updateStepInterval();
       countdownValue = 3;
       countdownTickMs = millis();
+      windingUpdateMs = millis();
       drawCountdownScreen();
     } else if (buttonEvent == BTN_LONG) {
       screenMode = SCREEN_PRESET_LIST;
@@ -722,6 +725,8 @@ void loop() {
       clampTargets();
       screenMode = SCREEN_WINDING;
       enableDriver(true);
+      lcd.clear();
+      windingUpdateMs = nowMs;
       drawWindingScreen();
       return;
     }
@@ -732,6 +737,8 @@ void loop() {
         clampTargets();
         screenMode = SCREEN_WINDING;
         enableDriver(true);
+        lcd.clear();
+        windingUpdateMs = nowMs;
         drawWindingScreen();
       } else {
         drawCountdownScreen();
@@ -753,6 +760,7 @@ void loop() {
       if (windingPaused) {
         enableDriver(false);
         blinkOn = true;
+        lcd.clear();
         drawPausedScreen();
       } else {
         screenMode = SCREEN_COUNTDOWN;
@@ -771,7 +779,8 @@ void loop() {
       enableDriver(false);
       screenMode = SCREEN_DONE;
       drawDoneScreen();
-    } else if (millis() % 250 == 0) {
+    } else if (nowMs - windingUpdateMs >= 500) {
+      windingUpdateMs = nowMs;
       drawWindingScreen();
     }
   } else if (screenMode == SCREEN_DONE) {
