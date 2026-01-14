@@ -820,7 +820,6 @@ void loop() {
   } else if (screenMode == SCREEN_DONE) {
     } else if (nowMs - windingUpdateMs >= WINDING_UI_INTERVAL_MS) {
     if (buttonEvent == BTN_CLICK) {
-      screenMode = SCREEN_MANUAL;
       manualField = 0;
       manualDigitIndex = 0;
       syncDigitsFromTargets();
