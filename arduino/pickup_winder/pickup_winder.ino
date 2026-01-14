@@ -14,7 +14,7 @@ const int ENC_BTN = 4;
 // TMC2209 Step/Dir interface
 const int STEP_PIN = 5;
 const int DIR_PIN = 6;
-const int EN_PIN = 13; // active LOW for most drivers
+const int EN_PIN = 7; // active LOW for most drivers
 
 // Winding settings
 const int MAX_PRESETS = 8;

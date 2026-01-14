@@ -58,7 +58,7 @@
 | --- | --- |
 | STEP | D5 |
 | DIR | D6 |
-| EN | D13 |
+| EN | D7 |
 | VIO | 5V |
 | GND | GND |
 
