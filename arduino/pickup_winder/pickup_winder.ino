@@ -64,6 +64,9 @@ char presetName[12] = "PRESET";
 int countdownValue = 3;
 unsigned long countdownTickMs = 0;
 bool windingPaused = false;
+bool blinkOn = true;
+unsigned long blinkTickMs = 0;
+bool blinkDirty = false;
 
 long targetTurns = 1000;
 int targetRpm = 200;
@@ -161,11 +164,15 @@ void printPadded(const char *text) {
   }
 }
 
-void printDigitsLine(const char *label, const int *digits, int count, bool selected) {
+void printDigitsLine(const char *label, const int *digits, int count, bool selected, int activeIndex) {
   char line[21];
   int offset = snprintf(line, sizeof(line), "%s%s", selected ? ">" : " ", label);
   for (int i = 0; i < count && offset + i < 20; i++) {
-    line[offset + i] = (char)('0' + digits[i]);
+    if (selected && i == activeIndex && !blinkOn) {
+      line[offset + i] = ' ';
+    } else {
+      line[offset + i] = (char)('0' + digits[i]);
+    }
   }
   int total = offset + count;
   for (int i = total; i < 20; i++) {
@@ -180,13 +187,14 @@ void drawManualScreen() {
   lcd.setCursor(0, 0);
   printPadded("Manual mode");
   lcd.setCursor(0, 1);
-  printDigitsLine("Turns:", turnsDigits, TURN_DIGITS, manualField == 0);
+  printDigitsLine("Turns:", turnsDigits, TURN_DIGITS, manualField == 0, manualField == 0 ? manualDigitIndex : -1);
   lcd.setCursor(0, 2);
-  printDigitsLine("RPM:", rpmDigits, RPM_DIGITS, manualField == 1);
+  printDigitsLine("RPM:", rpmDigits, RPM_DIGITS, manualField == 1, manualField == 1 ? manualDigitIndex : -1);
   lcd.setCursor(0, 3);
   if (manualField == 2) {
     char line[21];
-    snprintf(line, sizeof(line), "> Dir:%s", targetDirectionCW ? "CW" : "CCW");
+    const char *dirText = targetDirectionCW ? "CW" : "CCW";
+    snprintf(line, sizeof(line), "> Dir:%s", blinkOn ? dirText : "  ");
     printPadded(line);
   } else if (manualField == 3) {
     printPadded("> Start winding");
@@ -239,21 +247,27 @@ void drawPresetNewScreen() {
   lcd.setCursor(0, 0);
   printPadded("New preset");
   lcd.setCursor(0, 1);
-  printDigitsLine("Turns:", turnsDigits, TURN_DIGITS, presetField == 0);
+  printDigitsLine("Turns:", turnsDigits, TURN_DIGITS, presetField == 0, presetField == 0 ? presetDigitIndex : -1);
   lcd.setCursor(0, 2);
-  printDigitsLine("RPM:", rpmDigits, RPM_DIGITS, presetField == 1);
+  printDigitsLine("RPM:", rpmDigits, RPM_DIGITS, presetField == 1, presetField == 1 ? presetDigitIndex : -1);
   lcd.setCursor(0, 3);
   char line[21];
-  snprintf(line, sizeof(line), "%s Dir:%s", presetField == 2 ? ">" : " ", targetDirectionCW ? "CW" : "CCW");
+  const char *dirText = targetDirectionCW ? "CW" : "CCW";
+  snprintf(line, sizeof(line), "%s Dir:%s", presetField == 2 ? ">" : " ", (presetField == 2 && !blinkOn) ? "  " : dirText);
   printPadded(line);
 }
 
 void drawPresetNameScreen() {
+  char displayName[12];
+  strncpy(displayName, presetName, sizeof(displayName));
+  if (!blinkOn && nameIndex >= 0 && nameIndex < (int)sizeof(displayName) - 1) {
+    displayName[nameIndex] = ' ';
+  }
   lcd.clear();
   lcd.setCursor(0, 0);
   printPadded("Preset name");
   lcd.setCursor(0, 1);
-  printPadded(presetName);
+  printPadded(displayName);
   lcd.setCursor(0, 2);
   printPadded("Click: next");
   lcd.setCursor(0, 3);
@@ -423,14 +437,25 @@ void setup() {
   enableDriver(false);
   loadPresets();
   syncDigitsFromTargets();
+  blinkTickMs = millis();
   drawManualScreen();
 }
 
 void loop() {
   handleEncoder();
   ButtonEvent buttonEvent = readButton();
+  unsigned long nowMs = millis();
+  if (nowMs - blinkTickMs >= 500) {
+    blinkTickMs = nowMs;
+    blinkOn = !blinkOn;
+    blinkDirty = true;
+  }
 
   if (screenMode == SCREEN_MANUAL) {
+    if (blinkDirty) {
+      drawManualScreen();
+      blinkDirty = false;
+    }
     if (encoderDelta != 0) {
       if (manualField == 0) {
         turnsDigits[manualDigitIndex] = wrapDigit(turnsDigits[manualDigitIndex], encoderDelta);
@@ -487,6 +512,10 @@ void loop() {
       drawPresetListScreen();
     }
   } else if (screenMode == SCREEN_PRESET_LIST) {
+    if (blinkDirty) {
+      drawPresetListScreen();
+      blinkDirty = false;
+    }
     int maxIndex = MAX_PRESETS;
     if (encoderDelta != 0) {
       menuIndex = constrain(menuIndex + encoderDelta, 0, maxIndex);
@@ -514,6 +543,10 @@ void loop() {
       drawManualScreen();
     }
   } else if (screenMode == SCREEN_PRESET_NEW) {
+    if (blinkDirty) {
+      drawPresetNewScreen();
+      blinkDirty = false;
+    }
     if (encoderDelta != 0) {
       if (presetField == 0) {
         turnsDigits[presetDigitIndex] = wrapDigit(turnsDigits[presetDigitIndex], encoderDelta);
@@ -559,6 +592,10 @@ void loop() {
       drawPresetListScreen();
     }
   } else if (screenMode == SCREEN_PRESET_NAME) {
+    if (blinkDirty) {
+      drawPresetNameScreen();
+      blinkDirty = false;
+    }
     if (encoderDelta != 0) {
       presetName[nameIndex] = nextNameChar(presetName[nameIndex], encoderDelta);
       encoderDelta = 0;
@@ -590,6 +627,10 @@ void loop() {
       drawPresetListScreen();
     }
   } else if (screenMode == SCREEN_PRESET_VIEW) {
+    if (blinkDirty) {
+      drawPresetViewScreen();
+      blinkDirty = false;
+    }
     if (buttonEvent == BTN_CLICK) {
       targetTurns = presets[presetIndex].turns;
       targetRpm = presets[presetIndex].rpm;
@@ -612,6 +653,10 @@ void loop() {
       drawPresetListScreen();
     }
   } else if (screenMode == SCREEN_COUNTDOWN) {
+    if (blinkDirty) {
+      drawCountdownScreen();
+      blinkDirty = false;
+    }
     if (buttonEvent == BTN_CLICK) {
       clampTargets();
       screenMode = SCREEN_WINDING;
@@ -619,7 +664,6 @@ void loop() {
       drawWindingScreen();
       return;
     }
-    unsigned long nowMs = millis();
     if (nowMs - countdownTickMs >= 1000) {
       countdownTickMs = nowMs;
       countdownValue--;
@@ -633,6 +677,14 @@ void loop() {
       }
     }
   } else if (screenMode == SCREEN_WINDING) {
+    if (blinkDirty) {
+      if (windingPaused) {
+        drawPausedScreen();
+      } else {
+        drawWindingScreen();
+      }
+      blinkDirty = false;
+    }
     if (buttonEvent == BTN_LONG && windingPaused) {
       enableDriver(false);
       screenMode = SCREEN_MANUAL;
@@ -646,6 +698,7 @@ void loop() {
       windingPaused = !windingPaused;
       if (windingPaused) {
         enableDriver(false);
+        blinkOn = true;
         drawPausedScreen();
       } else {
         screenMode = SCREEN_COUNTDOWN;
@@ -668,6 +721,10 @@ void loop() {
       drawWindingScreen();
     }
   } else if (screenMode == SCREEN_DONE) {
+    if (blinkDirty) {
+      drawDoneScreen();
+      blinkDirty = false;
+    }
     if (buttonEvent == BTN_CLICK) {
       screenMode = SCREEN_MANUAL;
       manualField = 0;

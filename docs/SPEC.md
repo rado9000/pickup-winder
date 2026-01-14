@@ -6,6 +6,7 @@
   - wybór liczby zwojów (5 cyfr) i prędkości (4 cyfry) oraz kierunku,
   - obrót zmienia aktywną cyfrę,
   - kliknięcie przechodzi do kolejnej cyfry, a po niej do następnego pola,
+  - aktywne pole miga, aby wskazać edycję,
   - pole **Start winding** uruchamia nawijanie,
   - dłuższe przytrzymanie otwiera **Presets**.
 - **Menu Presets**:
@@ -14,6 +15,7 @@
   - dłuższe przytrzymanie wraca do Manual.
 - **New preset**:
   - pytania o liczbę zwojów, kierunek i prędkość (edycja cyfr),
+  - aktywne pole miga (cyfry lub znak nazwy),
   - następnie edycja nazwy (obrót = zmiana znaku, klik = kolejny znak),
   - dłuższe przytrzymanie zapisuje do EEPROM.
 - **Uruchomienie presetów**:
