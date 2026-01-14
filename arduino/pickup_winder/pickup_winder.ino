@@ -81,7 +81,6 @@ bool windingPaused = false;
 bool blinkOn = true;
 unsigned long blinkTickMs = 0;
 bool blinkDirty = false;
-unsigned long windingUpdateMs = 0;
 
 long targetTurns = 1000;
 int targetRpm = 200;
@@ -98,11 +97,10 @@ bool buttonWasDown = false;
 
 // Winding state
 long targetSteps = 0;
-long currentSteps = 0;
+volatile long currentSteps = 0;
 int currentRpm = 0;
-unsigned long lastStepMicros = 0;
-unsigned long stepIntervalMicros = 0;
-const unsigned long WINDING_UI_INTERVAL_MS = 1000;
+volatile bool stepLevel = false;
+volatile bool stepEnabled = false;
 
 // 42STH60-2004Q: 1.8° step angle => 200 full steps/rev
 const int MICROSTEP = 8; // 1,2,4,8,16... match driver microstep setting
@@ -358,7 +356,11 @@ void drawWindingScreen() {
   printPadded("Winding...");
   lcd.setCursor(0, 1);
   char line[21];
-  snprintf(line, sizeof(line), "Turns: %ld/%ld", currentSteps / STEPS_PER_REV, targetTurns);
+  long stepsSnapshot = 0;
+  noInterrupts();
+  stepsSnapshot = currentSteps;
+  interrupts();
+  snprintf(line, sizeof(line), "Turns: %ld/%ld", stepsSnapshot / STEPS_PER_REV, targetTurns);
   printPadded(line);
   lcd.setCursor(0, 2);
   snprintf(line, sizeof(line), "RPM: %d", currentRpm);
@@ -407,6 +409,77 @@ void enableDriver(bool enable) {
   digitalWrite(EN_PIN, enable ? LOW : HIGH);
 }
 
+float rpmToStepHz(int rpm) {
+  if (rpm <= 0) {
+    return 0.0f;
+  }
+  return (rpm / 60.0f) * (float)STEPS_PER_REV;
+}
+
+void setupTimer1ForStepHz(float stepHz) {
+  float isrHz = stepHz * 2.0f;
+
+  struct Presc {
+    uint16_t div;
+    uint8_t csBits;
+  };
+  const Presc prescList[] = {
+      {1, (1 << CS10)},
+      {8, (1 << CS11)},
+      {64, (1 << CS11) | (1 << CS10)},
+      {256, (1 << CS12)},
+      {1024, (1 << CS12) | (1 << CS10)}};
+
+  uint16_t ocr = 0;
+  uint8_t cs = 0;
+
+  for (const auto &p : prescList) {
+    float ticks = (16000000.0f / (float)p.div) / isrHz;
+    if (ticks >= 2.0f && ticks <= 65535.0f) {
+      ocr = (uint16_t)(ticks - 1.0f + 0.5f);
+      cs = p.csBits;
+      break;
+    }
+  }
+
+  if (cs == 0) {
+    cs = (1 << CS11);
+    ocr = 1000;
+  }
+
+  cli();
+  TCCR1A = 0;
+  TCCR1B = 0;
+  TCNT1 = 0;
+  TCCR1B |= (1 << WGM12);
+  OCR1A = ocr;
+  TIMSK1 |= (1 << OCIE1A);
+  TCCR1B |= cs;
+  sei();
+}
+
+void startStepTimer(int rpm) {
+  float stepHz = rpmToStepHz(rpm);
+  if (stepHz <= 0.0f) {
+    return;
+  }
+  noInterrupts();
+  stepLevel = false;
+  stepEnabled = true;
+  interrupts();
+  digitalWrite(STEP_PIN, LOW);
+  setupTimer1ForStepHz(stepHz);
+}
+
+void stopStepTimer() {
+  cli();
+  stepEnabled = false;
+  TIMSK1 &= ~(1 << OCIE1A);
+  TCCR1B = 0;
+  sei();
+  digitalWrite(STEP_PIN, LOW);
+}
+
 void setupTmc2209Uart() {
 #if USE_TMC2209_UART
   tmcSerial.begin(115200);
@@ -418,27 +491,16 @@ void setupTmc2209Uart() {
 #endif
 }
 
-void updateStepInterval() {
-  if (currentRpm <= 0) {
-    stepIntervalMicros = 0;
+ISR(TIMER1_COMPA_vect) {
+  if (!stepEnabled) {
     return;
   }
-  float stepsPerMinute = (float)currentRpm * STEPS_PER_REV;
-  float stepsPerSecond = stepsPerMinute / 60.0f;
-  stepIntervalMicros = (unsigned long)(1000000.0f / stepsPerSecond);
-}
-
-void stepMotor() {
-  if (stepIntervalMicros == 0) {
-    return;
-  }
-  unsigned long now = micros();
-  if (now - lastStepMicros >= stepIntervalMicros) {
-    lastStepMicros = now;
-    digitalWrite(STEP_PIN, HIGH);
-    delayMicroseconds(2);
-    digitalWrite(STEP_PIN, LOW);
+  stepLevel = !stepLevel;
+  if (stepLevel) {
+    PORTD |= (1 << PD5);
     currentSteps += 1;
+  } else {
+    PORTD &= ~(1 << PD5);
   }
 }
 
@@ -617,7 +679,6 @@ void loop() {
         setDirection(targetDirectionCW);
         countdownValue = 3;
         countdownTickMs = millis();
-        windingUpdateMs = millis();
         drawCountdownScreen();
       }
     } else if (buttonEvent == BTN_LONG) {
@@ -744,7 +805,6 @@ void loop() {
       setDirection(targetDirectionCW);
       countdownValue = 3;
       countdownTickMs = millis();
-      windingUpdateMs = millis();
       drawCountdownScreen();
     } else if (buttonEvent == BTN_LONG) {
       screenMode = SCREEN_PRESET_LIST;
@@ -758,8 +818,7 @@ void loop() {
       enableDriver(true);
       lcd.clear();
       currentRpm = targetRpm;
-      updateStepInterval();
-      windingUpdateMs = nowMs;
+      startStepTimer(currentRpm);
       drawWindingScreen();
       return;
     }
@@ -772,8 +831,7 @@ void loop() {
         enableDriver(true);
         lcd.clear();
         currentRpm = targetRpm;
-        updateStepInterval();
-        windingUpdateMs = nowMs;
+        startStepTimer(currentRpm);
         drawWindingScreen();
       } else {
         drawCountdownScreen();
@@ -782,6 +840,7 @@ void loop() {
   } else if (screenMode == SCREEN_WINDING) {
     blinkDirty = false;
     if (buttonEvent == BTN_LONG && windingPaused) {
+      stopStepTimer();
       enableDriver(false);
       screenMode = SCREEN_MANUAL;
       manualField = 0;
@@ -793,6 +852,7 @@ void loop() {
     if (buttonEvent == BTN_CLICK) {
       windingPaused = !windingPaused;
       if (windingPaused) {
+        stopStepTimer();
         enableDriver(false);
         blinkOn = true;
         lcd.clear();
@@ -808,13 +868,15 @@ void loop() {
     if (windingPaused) {
       return;
     }
-    stepMotor();
-    if (currentSteps >= targetSteps) {
+    long stepsSnapshot = 0;
+    noInterrupts();
+    stepsSnapshot = currentSteps;
+    interrupts();
+    if (stepsSnapshot >= targetSteps) {
+      stopStepTimer();
       enableDriver(false);
       screenMode = SCREEN_DONE;
       drawDoneScreen();
-    } else if (nowMs - windingUpdateMs >= 500) {
-      windingUpdateMs = nowMs;
       drawWindingScreen();
     }
   } else if (screenMode == SCREEN_DONE) {
