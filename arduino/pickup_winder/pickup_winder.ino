@@ -91,6 +91,7 @@ int rpmDigits[RPM_DIGITS] = {0, 2, 0, 0};
 
 volatile int encoderDelta = 0;
 volatile uint8_t encoderState = 0;
+int encoderAccum = 0;
 
 unsigned long buttonDownMs = 0;
 bool buttonWasDown = false;
@@ -101,6 +102,7 @@ long currentSteps = 0;
 int currentRpm = 0;
 unsigned long lastStepMicros = 0;
 unsigned long stepIntervalMicros = 0;
+const unsigned long WINDING_UI_INTERVAL_MS = 1000;
 
 // 42STH60-2004Q: 1.8° step angle => 200 full steps/rev
 const int MICROSTEP = 8; // 1,2,4,8,16... match driver microstep setting
@@ -538,6 +540,18 @@ void loop() {
   delta = encoderDelta;
   encoderDelta = 0;
   interrupts();
+  if (delta != 0) {
+    encoderAccum += delta;
+    if (encoderAccum >= 4) {
+      delta = 1;
+      encoderAccum = 0;
+    } else if (encoderAccum <= -4) {
+      delta = -1;
+      encoderAccum = 0;
+    } else {
+      delta = 0;
+    }
+  }
   bool allowBlink = (screenMode == SCREEN_MANUAL && manualField <= 2) ||
                     (screenMode == SCREEN_PRESET_NEW) ||
                     (screenMode == SCREEN_PRESET_NAME);
@@ -596,12 +610,11 @@ void loop() {
       } else {
         screenMode = SCREEN_COUNTDOWN;
         currentSteps = 0;
-        currentRpm = targetRpm;
+        currentRpm = 0;
         windingPaused = false;
         targetSteps = targetTurns * STEPS_PER_REV;
         enableDriver(false);
         setDirection(targetDirectionCW);
-        updateStepInterval();
         countdownValue = 3;
         countdownTickMs = millis();
         windingUpdateMs = millis();
@@ -724,12 +737,11 @@ void loop() {
 
       screenMode = SCREEN_COUNTDOWN;
       currentSteps = 0;
-      currentRpm = targetRpm;
+      currentRpm = 0;
       windingPaused = false;
       targetSteps = targetTurns * STEPS_PER_REV;
       enableDriver(false);
       setDirection(targetDirectionCW);
-      updateStepInterval();
       countdownValue = 3;
       countdownTickMs = millis();
       windingUpdateMs = millis();
@@ -806,7 +818,7 @@ void loop() {
       drawWindingScreen();
     }
   } else if (screenMode == SCREEN_DONE) {
-    blinkDirty = false;
+    } else if (nowMs - windingUpdateMs >= WINDING_UI_INTERVAL_MS) {
     if (buttonEvent == BTN_CLICK) {
       screenMode = SCREEN_MANUAL;
       manualField = 0;
