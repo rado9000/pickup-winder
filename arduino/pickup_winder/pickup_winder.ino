@@ -52,6 +52,7 @@ enum ButtonEvent {
 };
 
 ScreenMode screenMode = SCREEN_MANUAL;
+ScreenMode lastScreenMode = SCREEN_MANUAL;
 int manualField = 0;
 int menuIndex = 0;
 int presetIndex = 0;
@@ -184,14 +185,22 @@ void printDigitsLine(const char *label, const int *digits, int count, bool selec
   printPadded(line);
 }
 
-void drawManualScreen() {
-  lcd.clear();
+void drawManualHeader() {
   lcd.setCursor(0, 0);
   printPadded("Manual mode");
+}
+
+void drawManualTurnsLine() {
   lcd.setCursor(0, 1);
   printDigitsLine("Turns:", turnsDigits, TURN_DIGITS, manualField == 0, manualField == 0 ? manualDigitIndex : -1);
+}
+
+void drawManualRpmLine() {
   lcd.setCursor(0, 2);
   printDigitsLine("RPM:", rpmDigits, RPM_DIGITS, manualField == 1, manualField == 1 ? manualDigitIndex : -1);
+}
+
+void drawManualActionLine() {
   lcd.setCursor(0, 3);
   if (manualField == 2) {
     char line[21];
@@ -203,6 +212,14 @@ void drawManualScreen() {
   } else {
     printPadded("Hold: presets");
   }
+}
+
+void drawManualScreen() {
+  lcd.clear();
+  drawManualHeader();
+  drawManualTurnsLine();
+  drawManualRpmLine();
+  drawManualActionLine();
 }
 
 void drawPresetListScreen() {
@@ -259,6 +276,24 @@ void drawPresetNewScreen() {
   printPadded(line);
 }
 
+void drawPresetTurnsLine() {
+  lcd.setCursor(0, 1);
+  printDigitsLine("Turns:", turnsDigits, TURN_DIGITS, presetField == 0, presetField == 0 ? presetDigitIndex : -1);
+}
+
+void drawPresetRpmLine() {
+  lcd.setCursor(0, 2);
+  printDigitsLine("RPM:", rpmDigits, RPM_DIGITS, presetField == 1, presetField == 1 ? presetDigitIndex : -1);
+}
+
+void drawPresetDirLine() {
+  lcd.setCursor(0, 3);
+  char line[21];
+  const char *dirText = targetDirectionCW ? "CW" : "CCW";
+  snprintf(line, sizeof(line), "%s Dir:%s", presetField == 2 ? ">" : " ", (presetField == 2 && !blinkOn) ? "  " : dirText);
+  printPadded(line);
+}
+
 void drawPresetNameScreen() {
   char displayName[12];
   strncpy(displayName, presetName, sizeof(displayName));
@@ -274,6 +309,16 @@ void drawPresetNameScreen() {
   printPadded("Click: next");
   lcd.setCursor(0, 3);
   printPadded("Hold: save");
+}
+
+void drawPresetNameLine() {
+  char displayName[12];
+  strncpy(displayName, presetName, sizeof(displayName));
+  if (!blinkOn && nameIndex >= 0 && nameIndex < (int)sizeof(displayName) - 1) {
+    displayName[nameIndex] = ' ';
+  }
+  lcd.setCursor(0, 1);
+  printPadded(displayName);
 }
 
 void drawPresetViewScreen() {
@@ -443,6 +488,28 @@ void setup() {
   drawManualScreen();
 }
 
+void redrawForBlink() {
+  if (screenMode == SCREEN_MANUAL) {
+    if (manualField == 0) {
+      drawManualTurnsLine();
+    } else if (manualField == 1) {
+      drawManualRpmLine();
+    } else if (manualField == 2) {
+      drawManualActionLine();
+    }
+  } else if (screenMode == SCREEN_PRESET_NEW) {
+    if (presetField == 0) {
+      drawPresetTurnsLine();
+    } else if (presetField == 1) {
+      drawPresetRpmLine();
+    } else if (presetField == 2) {
+      drawPresetDirLine();
+    }
+  } else if (screenMode == SCREEN_PRESET_NAME) {
+    drawPresetNameLine();
+  }
+}
+
 void loop() {
   handleEncoder();
   ButtonEvent buttonEvent = readButton();
@@ -456,11 +523,17 @@ void loop() {
     blinkDirty = true;
   }
 
+  if (screenMode != lastScreenMode) {
+    lastScreenMode = screenMode;
+    blinkDirty = false;
+  }
+
+  if (blinkDirty) {
+    redrawForBlink();
+    blinkDirty = false;
+  }
+
   if (screenMode == SCREEN_MANUAL) {
-    if (blinkDirty) {
-      drawManualScreen();
-      blinkDirty = false;
-    }
     if (encoderDelta != 0) {
       if (manualField == 0) {
         turnsDigits[manualDigitIndex] = wrapDigit(turnsDigits[manualDigitIndex], encoderDelta);
@@ -545,10 +618,6 @@ void loop() {
       drawManualScreen();
     }
   } else if (screenMode == SCREEN_PRESET_NEW) {
-    if (blinkDirty) {
-      drawPresetNewScreen();
-      blinkDirty = false;
-    }
     if (encoderDelta != 0) {
       if (presetField == 0) {
         turnsDigits[presetDigitIndex] = wrapDigit(turnsDigits[presetDigitIndex], encoderDelta);
@@ -594,10 +663,6 @@ void loop() {
       drawPresetListScreen();
     }
   } else if (screenMode == SCREEN_PRESET_NAME) {
-    if (blinkDirty) {
-      drawPresetNameScreen();
-      blinkDirty = false;
-    }
     if (encoderDelta != 0) {
       presetName[nameIndex] = nextNameChar(presetName[nameIndex], encoderDelta);
       encoderDelta = 0;
