@@ -33,7 +33,7 @@ TMC2209Stepper tmcDriver(&tmcSerial, TMC_R_SENSE, TMC_UART_ADDRESS);
 const int MAX_PRESETS = 8;
 const long MAX_TURNS = 99999;
 const int MIN_RPM = 1;
-const int MAX_RPM = 2000;
+const int MAX_RPM_USER = 900;
 const int TURN_DIGITS = 5;
 const int RPM_DIGITS = 4;
 
@@ -44,6 +44,77 @@ struct Preset {
   bool directionCW;
   bool valid;
 };
+
+const uint32_t EEPROM_MAGIC = 0x57494E44UL;
+const uint8_t EEPROM_VERSION = 1;
+
+struct EepromHeader {
+  uint32_t magic;
+  uint8_t version;
+  uint8_t reserved[3];
+};
+
+const int EEPROM_HEADER_ADDR = 0;
+const int EEPROM_PRESET_BASE_ADDR = EEPROM_HEADER_ADDR + sizeof(EepromHeader);
+
+bool isPrintableNameChar(char c) {
+  return (c >= 32 && c <= 126);
+}
+
+void sanitizePresetName(char *nameBuf, size_t len) {
+  if (len == 0) {
+    return;
+  }
+  nameBuf[len - 1] = '\0';
+  for (size_t i = 0; i < len - 1; i++) {
+    char c = nameBuf[i];
+    if (c == '\0') {
+      break;
+    }
+    if (!isPrintableNameChar(c)) {
+      nameBuf[i] = ' ';
+    }
+  }
+}
+
+bool looksLikeValidPreset(const Preset &preset) {
+  if (!preset.valid) {
+    return false;
+  }
+  if (preset.turns < 1 || preset.turns > MAX_TURNS) {
+    return false;
+  }
+  if (preset.rpm < MIN_RPM || preset.rpm > MAX_RPM_USER) {
+    return false;
+  }
+  if (preset.name[0] == '\0') {
+    return false;
+  }
+  if (!isPrintableNameChar(preset.name[0])) {
+    return false;
+  }
+  return true;
+}
+
+void writeHeaderIfNeeded() {
+  EepromHeader header;
+  EEPROM.get(EEPROM_HEADER_ADDR, header);
+  if (header.magic != EEPROM_MAGIC || header.version != EEPROM_VERSION) {
+    header.magic = EEPROM_MAGIC;
+    header.version = EEPROM_VERSION;
+    header.reserved[0] = header.reserved[1] = header.reserved[2] = 0;
+    EEPROM.put(EEPROM_HEADER_ADDR, header);
+
+    Preset empty;
+    memset(&empty, 0, sizeof(empty));
+    empty.valid = false;
+    int addr = EEPROM_PRESET_BASE_ADDR;
+    for (int i = 0; i < MAX_PRESETS; i++) {
+      EEPROM.put(addr, empty);
+      addr += sizeof(Preset);
+    }
+  }
+}
 
 Preset presets[MAX_PRESETS];
 
@@ -104,24 +175,50 @@ volatile bool stepLevel = false;
 volatile bool stepEnabled = false;
 const unsigned long WINDING_UI_INTERVAL_MS = 500;
 
+// Soft-start ramp (optional, keeps tension stable)
+const uint16_t RAMP_MIN_MS = 1500;
+const uint16_t RAMP_MAX_MS = 3000;
+const uint16_t RAMP_BASE_MS = 1000;
+bool rampActive = false;
+uint32_t rampStartMs = 0;
+uint16_t rampDurationMs = 0;
+int rampStartRpm = 0;
+int rampTargetRpm = 0;
+int commandedRpm = 0;
+
 // 17HS4401: 1.8° step angle => 200 full steps/rev
-const int MICROSTEP = 8; // 1,2,4,8,16... match driver microstep setting
+const int MICROSTEP = 4; // 17HS4401 @ 24V: 4 µsteps keeps ISR load reasonable
 const int STEPS_PER_REV = 200 * MICROSTEP;
 
+// Practical limit for TIMER1 ISR frequency on ATmega328P (UNO/Nano).
+const long MAX_ISR_HZ = 40000;
+const int MAX_RPM = (int)((MAX_ISR_HZ / 2.0f) * 60.0f / (200.0f * (float)MICROSTEP));
+
 void loadPresets() {
-  int addr = 0;
+  writeHeaderIfNeeded();
+  int addr = EEPROM_PRESET_BASE_ADDR;
   for (int i = 0; i < MAX_PRESETS; i++) {
-    EEPROM.get(addr, presets[i]);
-    if (presets[i].valid != true) {
-      presets[i].valid = false;
+    Preset preset;
+    EEPROM.get(addr, preset);
+    sanitizePresetName(preset.name, sizeof(preset.name));
+    if (!looksLikeValidPreset(preset)) {
+      memset(&preset, 0, sizeof(preset));
+      preset.valid = false;
     }
+    presets[i] = preset;
     addr += sizeof(Preset);
   }
 }
 
 void savePreset(int index, const Preset &preset) {
-  int addr = index * sizeof(Preset);
-  EEPROM.put(addr, preset);
+  if (index < 0 || index >= MAX_PRESETS) {
+    return;
+  }
+  Preset stored = preset;
+  stored.valid = true;
+  sanitizePresetName(stored.name, sizeof(stored.name));
+  int addr = EEPROM_PRESET_BASE_ADDR + index * sizeof(Preset);
+  EEPROM.put(addr, stored);
 }
 
 int findEmptyPresetSlot() {
@@ -133,7 +230,8 @@ int findEmptyPresetSlot() {
   return -1;
 }
 
-void valueToDigits(long value, int *digits, int count) {
+  int addr = EEPROM_PRESET_BASE_ADDR + index * sizeof(Preset);
+  EEPROM.put(addr, presets[index]);
   for (int i = count - 1; i >= 0; i--) {
     digits[i] = value % 10;
     value /= 10;
@@ -169,7 +267,10 @@ void clampTargets() {
   }
   if (targetRpm < MIN_RPM) {
     targetRpm = MIN_RPM;
-  } else if (targetRpm > MAX_RPM) {
+  } else if (targetRpm > MAX_RPM_USER) {
+    targetRpm = MAX_RPM_USER;
+  }
+  if (targetRpm > MAX_RPM) {
     targetRpm = MAX_RPM;
   }
   syncDigitsFromTargets();
@@ -422,6 +523,35 @@ void enableDriver(bool enable) {
   digitalWrite(EN_PIN, enable ? LOW : HIGH);
 }
 
+uint16_t computeRampDurationMs(int targetRpmValue) {
+  long ms = (long)RAMP_BASE_MS + (long)targetRpmValue;
+  if (ms < RAMP_MIN_MS) {
+    ms = RAMP_MIN_MS;
+  }
+  if (ms > RAMP_MAX_MS) {
+    ms = RAMP_MAX_MS;
+  }
+  return (uint16_t)ms;
+}
+
+float smoothstep(float t) {
+  if (t <= 0.0f) {
+    return 0.0f;
+  }
+  if (t >= 1.0f) {
+    return 1.0f;
+  }
+  return t * t * (3.0f - 2.0f * t);
+}
+
+void beginRampToTarget(int targetRpmValue, int startRpm) {
+  rampActive = true;
+  rampStartMs = millis();
+  rampDurationMs = computeRampDurationMs(targetRpmValue);
+  rampStartRpm = startRpm;
+  rampTargetRpm = targetRpmValue;
+}
+
 float rpmToStepHz(int rpm) {
   if (rpm <= 0) {
     return 0.0f;
@@ -491,6 +621,32 @@ void stopStepTimer() {
   TCCR1B = 0;
   sei();
   digitalWrite(STEP_PIN, LOW);
+  rampActive = false;
+}
+
+void updateRamp(uint32_t nowMs) {
+  if (!rampActive || !stepEnabled) {
+    return;
+  }
+  uint32_t elapsed = nowMs - rampStartMs;
+  float t = (rampDurationMs == 0) ? 1.0f : (elapsed / (float)rampDurationMs);
+  float eased = smoothstep(t);
+  float rpmF = rampStartRpm + (rampTargetRpm - rampStartRpm) * eased;
+  int rpm = (int)lroundf(rpmF);
+  if (rpm < MIN_RPM) {
+    rpm = MIN_RPM;
+  }
+  if (rpm > targetRpm) {
+    rpm = targetRpm;
+  }
+  if (rpm != commandedRpm) {
+    commandedRpm = rpm;
+    currentRpm = rpm;
+    setupTimer1ForStepHz(rpmToStepHz(commandedRpm));
+  }
+  if (elapsed >= rampDurationMs) {
+    rampActive = false;
+  }
 }
 
 void setupTmc2209Uart() {
@@ -498,8 +654,9 @@ void setupTmc2209Uart() {
   tmcSerial.begin(115200);
   tmcDriver.begin();
   tmcDriver.toff(4);
-  tmcDriver.rms_current(600);
+  tmcDriver.rms_current(1200);
   tmcDriver.microsteps(MICROSTEP);
+  tmcDriver.intpol(true);
   tmcDriver.pwm_autoscale(true);
 #endif
 }
@@ -791,8 +948,9 @@ void loop() {
       Preset preset;
       memset(&preset, 0, sizeof(preset));
       strncpy(preset.name, presetName, sizeof(preset.name) - 1);
+      sanitizePresetName(preset.name, sizeof(preset.name));
       preset.turns = targetTurns;
-      preset.rpm = targetRpm;
+      preset.rpm = min(targetRpm, MAX_RPM_USER);
       preset.directionCW = targetDirectionCW;
       preset.valid = true;
       savePreset(slot, preset);
@@ -805,7 +963,7 @@ void loop() {
     blinkDirty = false;
     if (buttonEvent == BTN_CLICK) {
       targetTurns = presets[presetIndex].turns;
-      targetRpm = presets[presetIndex].rpm;
+      targetRpm = min(presets[presetIndex].rpm, MAX_RPM_USER);
       targetDirectionCW = presets[presetIndex].directionCW;
       syncDigitsFromTargets();
 
@@ -830,15 +988,20 @@ void loop() {
       screenMode = SCREEN_WINDING;
       enableDriver(true);
       lcd.clear();
-      currentRpm = targetRpm;
-      startStepTimer(currentRpm);
+      commandedRpm = MIN_RPM;
+      currentRpm = commandedRpm;
+      startStepTimer(commandedRpm);
+      beginRampToTarget(targetRpm, commandedRpm);
       drawWindingScreen();
       return;
     }
     if (nowMs - countdownTickMs >= 1000) {
       countdownTickMs = nowMs;
-      windingUpdateMs = nowMs;
-      countdownValue--;
+        commandedRpm = MIN_RPM;
+        currentRpm = commandedRpm;
+        startStepTimer(commandedRpm);
+        beginRampToTarget(targetRpm, commandedRpm);
+    updateRamp(nowMs);
       if (countdownValue < 0) {
         clampTargets();
         screenMode = SCREEN_WINDING;
