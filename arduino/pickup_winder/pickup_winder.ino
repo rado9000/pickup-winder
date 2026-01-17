@@ -37,7 +37,7 @@ TMC2209Stepper tmcDriver(&tmcSerial, TMC_R_SENSE, TMC_UART_ADDRESS);
 const int MAX_PRESETS = 8;
 const long MAX_TURNS = 99999;
 const int MIN_RPM = 1;
-const int MAX_RPM_USER = 900;
+const int MAX_RPM_USER = 1500;
 const int TURN_DIGITS = 5;
 const int RPM_DIGITS = 4;
 
@@ -128,6 +128,7 @@ enum ScreenMode {
   SCREEN_PRESET_NEW,
   SCREEN_PRESET_NAME,
   SCREEN_PRESET_VIEW,
+  SCREEN_PRESET_FULL,
   SCREEN_COUNTDOWN,
   SCREEN_WINDING,
   SCREEN_DONE
@@ -234,8 +235,16 @@ int findEmptyPresetSlot() {
   return -1;
 }
 
+void deletePreset(int index) {
+  if (index < 0 || index >= MAX_PRESETS) {
+    return;
+  }
+  presets[index].valid = false;
   int addr = EEPROM_PRESET_BASE_ADDR + index * sizeof(Preset);
   EEPROM.put(addr, presets[index]);
+}
+
+void valueToDigits(long value, int *digits, int count) {
   for (int i = count - 1; i >= 0; i--) {
     digits[i] = value % 10;
     value /= 10;
@@ -454,8 +463,20 @@ void drawPresetViewScreen() {
   snprintf(line, sizeof(line), "RPM: %d", presets[presetIndex].rpm);
   printPadded(line);
   lcd.setCursor(0, 3);
-  snprintf(line, sizeof(line), "Dir: %s", presets[presetIndex].directionCW ? "CW" : "CCW");
+  snprintf(line, sizeof(line), "Dir:%s Hold:Del", presets[presetIndex].directionCW ? "CW" : "CCW");
   printPadded(line);
+}
+
+void drawPresetFullScreen() {
+  lcd.clear();
+  lcd.setCursor(0, 0);
+  printPadded("Memory full");
+  lcd.setCursor(0, 1);
+  printPadded("Delete preset");
+  lcd.setCursor(0, 2);
+  printPadded("to save new");
+  lcd.setCursor(0, 3);
+  printPadded("Press to return");
 }
 
 void drawWindingScreen() {
@@ -947,7 +968,9 @@ void loop() {
     } else if (buttonEvent == BTN_LONG) {
       int slot = findEmptyPresetSlot();
       if (slot < 0) {
-        slot = 0;
+        screenMode = SCREEN_PRESET_FULL;
+        drawPresetFullScreen();
+        return;
       }
       Preset preset;
       memset(&preset, 0, sizeof(preset));
@@ -982,6 +1005,13 @@ void loop() {
       countdownTickMs = millis();
       drawCountdownScreen();
     } else if (buttonEvent == BTN_LONG) {
+      deletePreset(presetIndex);
+      screenMode = SCREEN_PRESET_LIST;
+      drawPresetListScreen();
+    }
+  } else if (screenMode == SCREEN_PRESET_FULL) {
+    blinkDirty = false;
+    if (buttonEvent == BTN_CLICK || buttonEvent == BTN_LONG) {
       screenMode = SCREEN_PRESET_LIST;
       drawPresetListScreen();
     }
@@ -996,23 +1026,22 @@ void loop() {
       currentRpm = commandedRpm;
       startStepTimer(commandedRpm);
       beginRampToTarget(targetRpm, commandedRpm);
+      windingUpdateMs = nowMs;
       drawWindingScreen();
       return;
     }
     if (nowMs - countdownTickMs >= 1000) {
       countdownTickMs = nowMs;
-        commandedRpm = MIN_RPM;
-        currentRpm = commandedRpm;
-        startStepTimer(commandedRpm);
-        beginRampToTarget(targetRpm, commandedRpm);
-    updateRamp(nowMs);
+      countdownValue--;
       if (countdownValue < 0) {
         clampTargets();
         screenMode = SCREEN_WINDING;
         enableDriver(true);
         lcd.clear();
-        currentRpm = targetRpm;
-        startStepTimer(currentRpm);
+        commandedRpm = MIN_RPM;
+        currentRpm = commandedRpm;
+        startStepTimer(commandedRpm);
+        beginRampToTarget(targetRpm, commandedRpm);
         windingUpdateMs = nowMs;
         drawWindingScreen();
       } else {
@@ -1050,6 +1079,7 @@ void loop() {
     if (windingPaused) {
       return;
     }
+    updateRamp(nowMs);
     long stepsSnapshot = 0;
     noInterrupts();
     stepsSnapshot = currentSteps;
@@ -1062,11 +1092,11 @@ void loop() {
     } else if (nowMs - windingUpdateMs >= WINDING_UI_INTERVAL_MS) {
       windingUpdateMs = nowMs;
       drawWindingProgressLine();
-      drawWindingScreen();
     }
   } else if (screenMode == SCREEN_DONE) {
-    } else if (nowMs - windingUpdateMs >= WINDING_UI_INTERVAL_MS) {
+    blinkDirty = false;
     if (buttonEvent == BTN_CLICK) {
+      screenMode = SCREEN_MANUAL;
       manualField = 0;
       manualDigitIndex = 0;
       syncDigitsFromTargets();
