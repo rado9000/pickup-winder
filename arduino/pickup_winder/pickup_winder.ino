@@ -37,7 +37,8 @@ TMC2209Stepper tmcDriver(&tmcSerial, TMC_R_SENSE, TMC_UART_ADDRESS);
 const int MAX_PRESETS = 8;
 const long MAX_TURNS = 99999;
 const int MIN_RPM = 1;
-const int MAX_RPM_USER = 900;
+// Lower this if you see missed steps at high RPM.
+const int MAX_RPM_USER = 600;
 const int TURN_DIGITS = 5;
 const int RPM_DIGITS = 4;
 
