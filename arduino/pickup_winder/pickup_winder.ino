@@ -4,6 +4,10 @@
 #include <SoftwareSerial.h>
 #include <TMCStepper.h>
 
+enum ButtonEvent : uint8_t;
+ButtonEvent readButton();
+void drawPresetFullScreen();
+
 // LCD 2004A (HD44780) with I2C backpack
 const int LCD_I2C_ADDRESS = 0x27;
 LiquidCrystal_I2C lcd(LCD_I2C_ADDRESS, 20, 4);
@@ -129,7 +133,7 @@ enum ScreenMode {
   SCREEN_DONE
 };
 
-enum ButtonEvent {
+enum ButtonEvent : uint8_t {
   BTN_NONE,
   BTN_CLICK,
   BTN_LONG
