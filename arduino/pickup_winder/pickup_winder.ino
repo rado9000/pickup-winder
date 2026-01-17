@@ -104,7 +104,7 @@ volatile bool stepLevel = false;
 volatile bool stepEnabled = false;
 const unsigned long WINDING_UI_INTERVAL_MS = 500;
 
-// 42STH60-2004Q: 1.8° step angle => 200 full steps/rev
+// 17HS4401: 1.8° step angle => 200 full steps/rev
 const int MICROSTEP = 8; // 1,2,4,8,16... match driver microstep setting
 const int STEPS_PER_REV = 200 * MICROSTEP;
 
