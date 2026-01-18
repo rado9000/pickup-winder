@@ -18,8 +18,13 @@ const int ENC_B = 3;
 const int ENC_BTN = 4;
 
 // TMC2209 Step/Dir interface
-// Use OC1A (D9) for hardware-toggled STEP on Timer1.
-const int STEP_PIN = 9;
+// Set to 1 if you wired STEP to OC1A (D9) for hardware toggle.
+#define USE_OC1A_STEP 0
+#if USE_OC1A_STEP
+const int STEP_PIN = 9; // OC1A
+#else
+const int STEP_PIN = 5; // D5
+#endif
 const int DIR_PIN = 6;
 const int EN_PIN = 7; // active LOW for most drivers
 
@@ -614,7 +619,9 @@ void setupTimer1ForStepHz(float stepHz) {
   TCCR1A = 0;
   TCCR1B = 0;
   TCNT1 = 0;
+#if USE_OC1A_STEP
   TCCR1A |= (1 << COM1A0); // Toggle OC1A on compare match
+#endif
   TCCR1B |= (1 << WGM12);
   OCR1A = ocr;
   TIMSK1 |= (1 << OCIE1A);
@@ -698,6 +705,13 @@ ISR(TIMER1_COMPA_vect) {
     return;
   }
   stepLevel = !stepLevel;
+#if !USE_OC1A_STEP
+  if (stepLevel) {
+    PORTD |= (1 << PD5);
+  } else {
+    PORTD &= ~(1 << PD5);
+  }
+#endif
   if (stepLevel) {
     currentSteps += 1;
   }
