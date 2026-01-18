@@ -1116,7 +1116,7 @@ void loop() {
     noInterrupts();
     stepsSnapshot = currentSteps;
     interrupts();
-    if (stopRequested && commandedRpm == 0 && !stepLevel) {
+    if (stopRequested && commandedRpm == 0 && !rampActive) {
       stopStepTimer();
       enableDriver(false);
       stopRequested = false;
