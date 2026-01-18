@@ -189,6 +189,7 @@ const unsigned long WINDING_UI_INTERVAL_MS = 500;
 bool stopRequested = false;
 bool pauseAfterStop = false;
 bool stopForCompletion = false;
+bool pendingPauseScreen = false;
 
 // Soft-start ramp (optional, keeps tension stable)
 const uint16_t RAMP_MIN_MS = 2500;
@@ -516,7 +517,11 @@ void drawCountdownScreen() {
 void drawPausedScreen() {
   lcd.setCursor(0, 0);
   printPadded("Paused");
-  long turnsDone = currentSteps / COUNT_STEPS_PER_REV;
+  long stepsSnapshot = 0;
+  noInterrupts();
+  stepsSnapshot = currentSteps;
+  interrupts();
+  long turnsDone = stepsSnapshot / COUNT_STEPS_PER_REV;
   if (turnsDone < 0) {
     turnsDone = 0;
   }
@@ -653,6 +658,7 @@ void stopStepTimer() {
   stopRequested = false;
   pauseAfterStop = false;
   stopForCompletion = false;
+  pendingPauseScreen = false;
 }
 
 void updateRamp(uint32_t nowMs) {
@@ -1076,6 +1082,7 @@ void loop() {
         countdownTickMs = millis();
         drawCountdownScreen();
       } else if (buttonEvent == BTN_LONG) {
+        windingPaused = false;
         screenMode = SCREEN_MANUAL;
         manualField = 0;
         manualDigitIndex = 0;
@@ -1089,6 +1096,17 @@ void loop() {
         stopRequested = true;
         pauseAfterStop = true;
         stopForCompletion = false;
+        pendingPauseScreen = true;
+        beginRampToTarget(0, currentRpm);
+      }
+      return;
+    }
+    if (buttonEvent == BTN_LONG) {
+      if (!stopRequested) {
+        stopRequested = true;
+        pauseAfterStop = false;
+        stopForCompletion = false;
+        pendingPauseScreen = false;
         beginRampToTarget(0, currentRpm);
       }
       return;
@@ -1105,11 +1123,14 @@ void loop() {
       if (stopForCompletion) {
         screenMode = SCREEN_DONE;
         drawDoneScreen();
-      } else if (pauseAfterStop) {
+      } else if (pauseAfterStop && pendingPauseScreen) {
+        pendingPauseScreen = false;
         windingPaused = true;
         blinkOn = true;
         lcd.clear();
         drawPausedScreen();
+      } else if (pauseAfterStop) {
+        windingPaused = true;
       }
       return;
     }
