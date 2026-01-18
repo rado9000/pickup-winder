@@ -193,7 +193,7 @@ int rampTargetRpm = 0;
 int commandedRpm = 0;
 
 // 17HS4401: 1.8° step angle => 200 full steps/rev
-const int MICROSTEP = 16; // Try 1/16 for smoother motion; lower if torque loss appears
+const int MICROSTEP = 8; // 1/8 microstep to allow higher RPM headroom
 const int STEPS_PER_REV = 200 * MICROSTEP;
 // Set to match your actual driver microstep setting if turns stop early/late.
 const int COUNT_STEPS_PER_REV = STEPS_PER_REV;
