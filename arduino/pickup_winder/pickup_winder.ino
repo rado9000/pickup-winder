@@ -186,6 +186,8 @@ int currentRpm = 0;
 volatile bool stepLevel = false;
 volatile bool stepEnabled = false;
 const unsigned long WINDING_UI_INTERVAL_MS = 500;
+// Set to 1 to use ramped deceleration on pause/stop.
+#define USE_SOFT_STOP 0
 bool stopRequested = false;
 bool pauseAfterStop = false;
 bool stopForCompletion = false;
@@ -1092,6 +1094,7 @@ void loop() {
       return;
     }
     if (buttonEvent == BTN_CLICK) {
+#if USE_SOFT_STOP
       if (!stopRequested) {
         stopRequested = true;
         pauseAfterStop = true;
@@ -1099,9 +1102,18 @@ void loop() {
         pendingPauseScreen = true;
         beginRampToTarget(0, currentRpm);
       }
+#else
+      stopStepTimer();
+      enableDriver(false);
+      windingPaused = true;
+      blinkOn = true;
+      lcd.clear();
+      drawPausedScreen();
+#endif
       return;
     }
     if (buttonEvent == BTN_LONG) {
+#if USE_SOFT_STOP
       if (!stopRequested) {
         stopRequested = true;
         pauseAfterStop = false;
@@ -1109,6 +1121,15 @@ void loop() {
         pendingPauseScreen = false;
         beginRampToTarget(0, currentRpm);
       }
+#else
+      stopStepTimer();
+      enableDriver(false);
+      screenMode = SCREEN_MANUAL;
+      manualField = 0;
+      manualDigitIndex = 0;
+      syncDigitsFromTargets();
+      drawManualScreen();
+#endif
       return;
     }
     updateRamp(nowMs);
@@ -1135,12 +1156,19 @@ void loop() {
       return;
     }
     if (stepsSnapshot >= targetSteps) {
+#if USE_SOFT_STOP
       if (!stopRequested) {
         stopRequested = true;
         pauseAfterStop = false;
         stopForCompletion = true;
         beginRampToTarget(0, currentRpm);
       }
+#else
+      stopStepTimer();
+      enableDriver(false);
+      screenMode = SCREEN_DONE;
+      drawDoneScreen();
+#endif
     } else if (nowMs - windingUpdateMs >= WINDING_UI_INTERVAL_MS) {
       windingUpdateMs = nowMs;
       // Keep LCD frozen during winding for maximum stability.
