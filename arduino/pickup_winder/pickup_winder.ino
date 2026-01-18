@@ -193,7 +193,7 @@ int rampTargetRpm = 0;
 int commandedRpm = 0;
 
 // 17HS4401: 1.8° step angle => 200 full steps/rev
-const int MICROSTEP = 4; // 17HS4401 @ 24V: 4 µsteps keeps ISR load reasonable
+const int MICROSTEP = 16; // Try 1/16 for smoother motion; lower if torque loss appears
 const int STEPS_PER_REV = 200 * MICROSTEP;
 // Set to match your actual driver microstep setting if turns stop early/late.
 const int COUNT_STEPS_PER_REV = STEPS_PER_REV;
@@ -483,32 +483,15 @@ void drawPresetFullScreen() {
 }
 
 void drawWindingScreen() {
+  lcd.clear();
   lcd.setCursor(0, 0);
-  printPadded("Winding...");
+  printPadded("Pickup winding");
   lcd.setCursor(0, 1);
-  char line[21];
-  long stepsSnapshot = 0;
-  noInterrupts();
-  stepsSnapshot = currentSteps;
-  interrupts();
-  snprintf(line, sizeof(line), "Turns: %ld/%ld", stepsSnapshot / COUNT_STEPS_PER_REV, targetTurns);
-  printPadded(line);
+  printPadded("in progress...");
   lcd.setCursor(0, 2);
-  snprintf(line, sizeof(line), "RPM: %d", currentRpm);
-  printPadded(line);
+  printPadded("Press to pause");
   lcd.setCursor(0, 3);
-  printPadded("Press: pause");
-}
-
-void drawWindingProgressLine() {
-  lcd.setCursor(0, 1);
-  char line[21];
-  long stepsSnapshot = 0;
-  noInterrupts();
-  stepsSnapshot = currentSteps;
-  interrupts();
-  snprintf(line, sizeof(line), "Turns: %ld/%ld", stepsSnapshot / COUNT_STEPS_PER_REV, targetTurns);
-  printPadded(line);
+  printPadded(" ");
 }
 
 void drawCountdownScreen() {
@@ -524,12 +507,17 @@ void drawCountdownScreen() {
 void drawPausedScreen() {
   lcd.setCursor(0, 0);
   printPadded("Paused");
+  long turnsDone = currentSteps / COUNT_STEPS_PER_REV;
+  if (turnsDone < 0) {
+    turnsDone = 0;
+  }
+  long percent = targetTurns > 0 ? (turnsDone * 100L) / targetTurns : 0;
   lcd.setCursor(0, 1);
   char line[21];
-  snprintf(line, sizeof(line), "Turns: %ld/%ld", currentSteps / COUNT_STEPS_PER_REV, targetTurns);
+  snprintf(line, sizeof(line), "Turns: %ld/%ld", turnsDone, targetTurns);
   printPadded(line);
   lcd.setCursor(0, 2);
-  snprintf(line, sizeof(line), "RPM: %d", currentRpm);
+  snprintf(line, sizeof(line), "Done: %ld%%", percent);
   printPadded(line);
   lcd.setCursor(0, 3);
   printPadded("Hold: menu");
@@ -1094,7 +1082,7 @@ void loop() {
       drawDoneScreen();
     } else if (nowMs - windingUpdateMs >= WINDING_UI_INTERVAL_MS) {
       windingUpdateMs = nowMs;
-      drawWindingProgressLine();
+      // Keep LCD frozen during winding for maximum stability.
     }
   } else if (screenMode == SCREEN_DONE) {
     blinkDirty = false;
