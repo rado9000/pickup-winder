@@ -187,11 +187,11 @@ volatile bool stepLevel = false;
 volatile bool stepEnabled = false;
 const unsigned long WINDING_UI_INTERVAL_MS = 500;
 // Set to 1 to use ramped deceleration on pause/stop.
-#define USE_SOFT_STOP 0
+#define USE_SOFT_STOP 1
 bool stopRequested = false;
-bool pauseAfterStop = false;
 bool stopForCompletion = false;
-bool pendingPauseScreen = false;
+bool pauseRequested = false;
+bool menuRequested = false;
 
 // Soft-start ramp (optional, keeps tension stable)
 const uint16_t RAMP_MIN_MS = 2500;
@@ -658,9 +658,9 @@ void stopStepTimer() {
   digitalWrite(STEP_PIN, LOW);
   rampActive = false;
   stopRequested = false;
-  pauseAfterStop = false;
   stopForCompletion = false;
-  pendingPauseScreen = false;
+  pauseRequested = false;
+  menuRequested = false;
 }
 
 void updateRamp(uint32_t nowMs) {
@@ -1097,9 +1097,9 @@ void loop() {
 #if USE_SOFT_STOP
       if (!stopRequested) {
         stopRequested = true;
-        pauseAfterStop = true;
         stopForCompletion = false;
-        pendingPauseScreen = true;
+        pauseRequested = true;
+        menuRequested = false;
         beginRampToTarget(0, currentRpm);
       }
 #else
@@ -1116,9 +1116,9 @@ void loop() {
 #if USE_SOFT_STOP
       if (!stopRequested) {
         stopRequested = true;
-        pauseAfterStop = false;
         stopForCompletion = false;
-        pendingPauseScreen = false;
+        pauseRequested = false;
+        menuRequested = true;
         beginRampToTarget(0, currentRpm);
       }
 #else
@@ -1144,14 +1144,19 @@ void loop() {
       if (stopForCompletion) {
         screenMode = SCREEN_DONE;
         drawDoneScreen();
-      } else if (pauseAfterStop && pendingPauseScreen) {
-        pendingPauseScreen = false;
+      } else if (pauseRequested) {
+        pauseRequested = false;
         windingPaused = true;
         blinkOn = true;
         lcd.clear();
         drawPausedScreen();
-      } else if (pauseAfterStop) {
-        windingPaused = true;
+      } else if (menuRequested) {
+        menuRequested = false;
+        screenMode = SCREEN_MANUAL;
+        manualField = 0;
+        manualDigitIndex = 0;
+        syncDigitsFromTargets();
+        drawManualScreen();
       }
       return;
     }
@@ -1159,8 +1164,9 @@ void loop() {
 #if USE_SOFT_STOP
       if (!stopRequested) {
         stopRequested = true;
-        pauseAfterStop = false;
         stopForCompletion = true;
+        pauseRequested = false;
+        menuRequested = false;
         beginRampToTarget(0, currentRpm);
       }
 #else
