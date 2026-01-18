@@ -18,7 +18,8 @@ const int ENC_B = 3;
 const int ENC_BTN = 4;
 
 // TMC2209 Step/Dir interface
-const int STEP_PIN = 5;
+// Use OC1A (D9) for hardware-toggled STEP on Timer1.
+const int STEP_PIN = 9;
 const int DIR_PIN = 6;
 const int EN_PIN = 7; // active LOW for most drivers
 
@@ -180,6 +181,9 @@ int currentRpm = 0;
 volatile bool stepLevel = false;
 volatile bool stepEnabled = false;
 const unsigned long WINDING_UI_INTERVAL_MS = 500;
+bool stopRequested = false;
+bool pauseAfterStop = false;
+bool stopForCompletion = false;
 
 // Soft-start ramp (optional, keeps tension stable)
 const uint16_t RAMP_MIN_MS = 2500;
@@ -610,6 +614,7 @@ void setupTimer1ForStepHz(float stepHz) {
   TCCR1A = 0;
   TCCR1B = 0;
   TCNT1 = 0;
+  TCCR1A |= (1 << COM1A0); // Toggle OC1A on compare match
   TCCR1B |= (1 << WGM12);
   OCR1A = ocr;
   TIMSK1 |= (1 << OCIE1A);
@@ -638,6 +643,9 @@ void stopStepTimer() {
   sei();
   digitalWrite(STEP_PIN, LOW);
   rampActive = false;
+  stopRequested = false;
+  pauseAfterStop = false;
+  stopForCompletion = false;
 }
 
 void updateRamp(uint32_t nowMs) {
@@ -649,16 +657,24 @@ void updateRamp(uint32_t nowMs) {
   float eased = smoothstep(t);
   float rpmF = rampStartRpm + (rampTargetRpm - rampStartRpm) * eased;
   int rpm = (int)lroundf(rpmF);
-  if (rpm < MIN_RPM) {
-    rpm = MIN_RPM;
-  }
-  if (rpm > targetRpm) {
-    rpm = targetRpm;
+  if (rampTargetRpm == 0) {
+    if (rpm < 0) {
+      rpm = 0;
+    }
+  } else {
+    if (rpm < MIN_RPM) {
+      rpm = MIN_RPM;
+    }
+    if (rpm > targetRpm) {
+      rpm = targetRpm;
+    }
   }
   if (rpm != commandedRpm) {
     commandedRpm = rpm;
     currentRpm = rpm;
-    setupTimer1ForStepHz(rpmToStepHz(commandedRpm));
+    if (commandedRpm > 0) {
+      setupTimer1ForStepHz(rpmToStepHz(commandedRpm));
+    }
   }
   if (elapsed >= rampDurationMs) {
     rampActive = false;
@@ -683,10 +699,7 @@ ISR(TIMER1_COMPA_vect) {
   }
   stepLevel = !stepLevel;
   if (stepLevel) {
-    PORTD |= (1 << PD5);
     currentSteps += 1;
-  } else {
-    PORTD &= ~(1 << PD5);
   }
 }
 
@@ -1041,33 +1054,29 @@ void loop() {
     }
   } else if (screenMode == SCREEN_WINDING) {
     blinkDirty = false;
-    if (buttonEvent == BTN_LONG && windingPaused) {
-      stopStepTimer();
-      enableDriver(false);
-      screenMode = SCREEN_MANUAL;
-      manualField = 0;
-      manualDigitIndex = 0;
-      syncDigitsFromTargets();
-      drawManualScreen();
-      return;
-    }
-    if (buttonEvent == BTN_CLICK) {
-      windingPaused = !windingPaused;
-      if (windingPaused) {
-        stopStepTimer();
-        enableDriver(false);
-        blinkOn = true;
-        lcd.clear();
-        drawPausedScreen();
-      } else {
+    if (windingPaused) {
+      if (buttonEvent == BTN_CLICK) {
+        windingPaused = false;
         screenMode = SCREEN_COUNTDOWN;
         countdownValue = 3;
         countdownTickMs = millis();
         drawCountdownScreen();
+      } else if (buttonEvent == BTN_LONG) {
+        screenMode = SCREEN_MANUAL;
+        manualField = 0;
+        manualDigitIndex = 0;
+        syncDigitsFromTargets();
+        drawManualScreen();
       }
       return;
     }
-    if (windingPaused) {
+    if (buttonEvent == BTN_CLICK) {
+      if (!stopRequested) {
+        stopRequested = true;
+        pauseAfterStop = true;
+        stopForCompletion = false;
+        beginRampToTarget(0, currentRpm);
+      }
       return;
     }
     updateRamp(nowMs);
@@ -1075,11 +1084,28 @@ void loop() {
     noInterrupts();
     stepsSnapshot = currentSteps;
     interrupts();
-    if (stepsSnapshot >= targetSteps) {
+    if (stopRequested && commandedRpm == 0 && !stepLevel) {
       stopStepTimer();
       enableDriver(false);
-      screenMode = SCREEN_DONE;
-      drawDoneScreen();
+      stopRequested = false;
+      if (stopForCompletion) {
+        screenMode = SCREEN_DONE;
+        drawDoneScreen();
+      } else if (pauseAfterStop) {
+        windingPaused = true;
+        blinkOn = true;
+        lcd.clear();
+        drawPausedScreen();
+      }
+      return;
+    }
+    if (stepsSnapshot >= targetSteps) {
+      if (!stopRequested) {
+        stopRequested = true;
+        pauseAfterStop = false;
+        stopForCompletion = true;
+        beginRampToTarget(0, currentRpm);
+      }
     } else if (nowMs - windingUpdateMs >= WINDING_UI_INTERVAL_MS) {
       windingUpdateMs = nowMs;
       // Keep LCD frozen during winding for maximum stability.
