@@ -56,7 +56,7 @@
 ### TMC2209 (Step/Dir)
 | TMC2209 | Arduino |
 | --- | --- |
-| STEP | D9 (OC1A) |
+| STEP | D9 (OC1A) lub D5 (przełącznik `USE_OC1A_STEP`) |
 | DIR | D6 |
 | EN | D7 |
 | VIO | 5V |
@@ -65,6 +65,38 @@
 | UART TX | A1 (opcjonalnie) |
 
 > **Uwaga:** ustaw mikrokrok zgodnie z konfiguracją sterownika, a `MICROSTEP`/`COUNT_STEPS_PER_REV` w kodzie dopasuj do konfiguracji. Adres I2C LCD (`0x27`) można zmienić w kodzie, jeśli moduł ma inny.
+
+## Połączenia (RP2040 / Raspberry Pi Pico)
+
+### LCD 2004A (HD44780, I2C backpack)
+| LCD | RP2040 |
+| --- | --- |
+| SDA | GP0 |
+| SCL | GP1 |
+| VCC | 5V |
+| GND | GND |
+
+### Enkoder z przyciskiem
+| Enkoder | RP2040 |
+| --- | --- |
+| CLK | GP6 |
+| DT | GP7 |
+| SW | GP8 |
+| + | 3.3V lub 5V (zgodnie z modułem) |
+| GND | GND |
+
+### TMC2209 (Step/Dir)
+| TMC2209 | RP2040 |
+| --- | --- |
+| STEP | GP2 |
+| DIR | GP3 |
+| EN | GP4 |
+| VIO | 3.3V |
+| GND | GND |
+| UART RX | GP13 (opcjonalnie) |
+| UART TX | GP12 (opcjonalnie) |
+
+> **Uwaga:** RP2040 używa logiki 3.3V. Jeśli sterownik lub enkoder wymaga 5V, użyj konwertera poziomów.
 
 ## Uwagi do implementacji
 
