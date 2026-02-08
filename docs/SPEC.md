@@ -90,11 +90,11 @@
 | --- | --- |
 | STEP | GP2 |
 | DIR | GP3 |
-| EN | GP4 |
+| EN | GP10 |
 | VIO | 3.3V |
 | GND | GND |
-| UART RX | GP13 (opcjonalnie) |
-| UART TX | GP12 (opcjonalnie) |
+| UART RX | GP5 (opcjonalnie) |
+| UART TX | GP4 (opcjonalnie) |
 
 > **Uwaga:** RP2040 używa logiki 3.3V. Jeśli sterownik lub enkoder wymaga 5V, użyj konwertera poziomów.
 

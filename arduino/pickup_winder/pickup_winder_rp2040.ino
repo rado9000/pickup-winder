@@ -4,6 +4,9 @@
 #include <Wire.h>
 #include <TMCStepper.h>
 
+enum ButtonEvent : uint8_t;
+ButtonEvent readButton();
+
 // LCD 2004A (HD44780) with I2C backpack
 const int LCD_I2C_ADDRESS = 0x27;
 LiquidCrystal_I2C lcd(LCD_I2C_ADDRESS, 20, 4);
@@ -16,13 +19,14 @@ const int ENC_BTN = 8;
 // TMC2209 Step/Dir interface (RP2040 GPIO pins)
 const int STEP_PIN = 2;
 const int DIR_PIN = 3;
-const int EN_PIN = 4; // active LOW for most drivers
+const int EN_PIN = 10; // active LOW for most drivers
 
 // Optional UART configuration using TMCStepper library (Serial1 on RP2040)
 #define USE_TMC2209_UART 1
 #if USE_TMC2209_UART
-const int TMC_UART_TX = 12;
-const int TMC_UART_RX = 13;
+// Arduino Mbed RP2040 core uses Serial1 default pins: TX=GP4, RX=GP5.
+const int TMC_UART_TX = 4;
+const int TMC_UART_RX = 5;
 const int TMC_UART_ADDRESS = 0;
 const float TMC_R_SENSE = 0.11f;
 HardwareSerial &tmcSerial = Serial1;
@@ -656,8 +660,6 @@ void updateStepCounting() {
 
 void setupTmc2209Uart() {
 #if USE_TMC2209_UART
-  tmcSerial.setTX(TMC_UART_TX);
-  tmcSerial.setRX(TMC_UART_RX);
   tmcSerial.begin(115200);
   tmcDriver.begin();
   tmcDriver.toff(4);
