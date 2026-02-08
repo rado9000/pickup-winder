@@ -10,6 +10,8 @@ ButtonEvent readButton();
 // LCD 2004A (HD44780) with I2C backpack
 const int LCD_I2C_ADDRESS = 0x27;
 LiquidCrystal_I2C lcd(LCD_I2C_ADDRESS, 20, 4);
+const int I2C_SDA_PIN = 0;
+const int I2C_SCL_PIN = 1;
 
 // Encoder with button (RP2040 GPIO pins)
 const int ENC_A = 6; // interrupt pin
@@ -714,6 +716,11 @@ char nextNameChar(char current, int delta) {
 }
 
 void setup() {
+  Wire.setSDA(I2C_SDA_PIN);
+  Wire.setSCL(I2C_SCL_PIN);
+  Wire.begin();
+  EEPROM.begin(1024);
+
   pinMode(ENC_A, INPUT_PULLUP);
   pinMode(ENC_B, INPUT_PULLUP);
   pinMode(ENC_BTN, INPUT_PULLUP);
