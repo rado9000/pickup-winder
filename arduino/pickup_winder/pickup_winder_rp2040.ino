@@ -148,6 +148,7 @@ enum ScreenMode {
   SCREEN_PRESET_NAME,
   SCREEN_PRESET_VIEW,
   SCREEN_PRESET_FULL,
+  SCREEN_PREWIND,
   SCREEN_COUNTDOWN,
   SCREEN_WINDING,
   SCREEN_DONE
@@ -196,6 +197,8 @@ long targetSteps = 0;
 volatile long currentSteps = 0;
 int currentRpm = 0;
 const unsigned long WINDING_UI_INTERVAL_MS = 200;
+const int ENCODER_DETENTS_PER_REV = 20;
+const uint16_t PREWIND_STEP_DELAY_US = 400;
 
 // Soft stop flow
 #define USE_SOFT_STOP 0
@@ -232,6 +235,7 @@ float stepAccumulator = 0.0f;
 uint32_t lastStepUpdateUs = 0;
 float turnsAccum = 0.0f;
 uint32_t lastTurnUpdateMs = 0;
+float prewindStepCarry = 0.0f;
 
 void loadPresets() {
   writeHeaderIfNeeded();
@@ -522,6 +526,30 @@ void drawWindingScreen() {
   printPadded(" ");
 }
 
+void drawPrewindScreen() {
+  lcd.clear();
+  lcd.setCursor(0, 0);
+  printPadded("Prewind mode");
+  lcd.setCursor(0, 1);
+  printPadded("Rotate encoder");
+  lcd.setCursor(0, 2);
+  printPadded("Click: start");
+  lcd.setCursor(0, 3);
+  printPadded("Hold: cancel");
+}
+
+void drawPrewindProgressLine() {
+  lcd.setCursor(0, 1);
+  char line[21];
+  long turnsDone = (long)turnsAccum;
+  if (turnsDone < 0) {
+    turnsDone = 0;
+  }
+  long percent = targetTurns > 0 ? (turnsDone * 100L) / targetTurns : 0;
+  snprintf(line, sizeof(line), "Turns:%5ld %3ld%%", turnsDone, percent);
+  printPadded(line);
+}
+
 void drawWindingProgressLine() {
   lcd.setCursor(0, 1);
   char line[21];
@@ -577,6 +605,32 @@ void setDirection(bool cw) {
 
 void enableDriver(bool enable) {
   digitalWrite(EN_PIN, enable ? LOW : HIGH);
+}
+
+void disableStepOutput() {
+#if defined(ARDUINO_ARCH_RP2040)
+  if (stepPwmInited) {
+    pwm_set_enabled(stepSlice, false);
+  }
+  pinMode(STEP_PIN, OUTPUT);
+  digitalWrite(STEP_PIN, LOW);
+#else
+  analogWrite(STEP_PIN, 0);
+#endif
+}
+
+void stepMotorSteps(long steps, bool cw) {
+  if (steps <= 0) {
+    return;
+  }
+  disableStepOutput();
+  setDirection(cw);
+  for (long i = 0; i < steps; i++) {
+    digitalWrite(STEP_PIN, HIGH);
+    delayMicroseconds(PREWIND_STEP_DELAY_US);
+    digitalWrite(STEP_PIN, LOW);
+    delayMicroseconds(PREWIND_STEP_DELAY_US);
+  }
 }
 
 uint16_t computeRampDurationMs(int targetRpmValue) {
@@ -967,19 +1021,20 @@ void loop() {
         manualField = 3;
         drawManualScreen();
       } else {
-        screenMode = SCREEN_COUNTDOWN;
+        screenMode = SCREEN_PREWIND;
         currentSteps = 0;
         stepAccumulator = 0.0f;
         turnsAccum = 0.0f;
+        prewindStepCarry = 0.0f;
         lastTurnUpdateMs = millis();
         currentRpm = 0;
         windingPaused = false;
         targetSteps = targetTurns * COUNT_STEPS_PER_REV;
-        enableDriver(false);
+        enableDriver(true);
         setDirection(targetDirectionCW);
-        countdownValue = 3;
-        countdownTickMs = millis();
-        drawCountdownScreen();
+        disableStepOutput();
+        windingUpdateMs = millis();
+        drawPrewindScreen();
       }
     } else if (buttonEvent == BTN_LONG) {
       screenMode = SCREEN_PRESET_LIST;
@@ -1099,19 +1154,20 @@ void loop() {
       targetDirectionCW = presets[presetIndex].directionCW;
       syncDigitsFromTargets();
 
-      screenMode = SCREEN_COUNTDOWN;
+      screenMode = SCREEN_PREWIND;
       currentSteps = 0;
       stepAccumulator = 0.0f;
       turnsAccum = 0.0f;
+      prewindStepCarry = 0.0f;
       lastTurnUpdateMs = millis();
       currentRpm = 0;
       windingPaused = false;
       targetSteps = targetTurns * COUNT_STEPS_PER_REV;
-      enableDriver(false);
+      enableDriver(true);
       setDirection(targetDirectionCW);
-      countdownValue = 3;
-      countdownTickMs = millis();
-      drawCountdownScreen();
+      disableStepOutput();
+      windingUpdateMs = millis();
+      drawPrewindScreen();
     } else if (buttonEvent == BTN_LONG) {
       deletePreset(presetIndex);
       screenMode = SCREEN_PRESET_LIST;
@@ -1122,6 +1178,50 @@ void loop() {
     if (buttonEvent == BTN_CLICK || buttonEvent == BTN_LONG) {
       screenMode = SCREEN_PRESET_LIST;
       drawPresetListScreen();
+    }
+  } else if (screenMode == SCREEN_PREWIND) {
+    blinkDirty = false;
+    if (buttonEvent == BTN_CLICK) {
+      screenMode = SCREEN_COUNTDOWN;
+      countdownValue = 3;
+      countdownTickMs = millis();
+      drawCountdownScreen();
+      return;
+    }
+    if (buttonEvent == BTN_LONG) {
+      screenMode = SCREEN_MANUAL;
+      manualField = 0;
+      manualDigitIndex = 0;
+      syncDigitsFromTargets();
+      enableDriver(false);
+      disableStepOutput();
+      drawManualScreen();
+      return;
+    }
+    if (delta != 0) {
+      float stepsPerDetent = (float)STEPS_PER_REV / (float)ENCODER_DETENTS_PER_REV;
+      prewindStepCarry += stepsPerDetent * (float)delta;
+      long stepsToMove = (long)prewindStepCarry;
+      if (stepsToMove != 0) {
+        prewindStepCarry -= (float)stepsToMove;
+        bool stepCw = stepsToMove > 0 ? targetDirectionCW : !targetDirectionCW;
+        long absSteps = labs(stepsToMove);
+        stepMotorSteps(absSteps, stepCw);
+        stepAccumulator += (float)stepsToMove;
+        if (stepAccumulator < 0.0f) {
+          stepAccumulator = 0.0f;
+          prewindStepCarry = 0.0f;
+        }
+        currentSteps = (long)stepAccumulator;
+        turnsAccum = stepAccumulator / (float)COUNT_STEPS_PER_REV;
+        if (turnsAccum < 0.0f) {
+          turnsAccum = 0.0f;
+        }
+      }
+      drawPrewindProgressLine();
+    } else if (nowMs - windingUpdateMs >= WINDING_UI_INTERVAL_MS) {
+      windingUpdateMs = nowMs;
+      drawPrewindProgressLine();
     }
   } else if (screenMode == SCREEN_COUNTDOWN) {
     blinkDirty = false;
