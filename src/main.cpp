@@ -536,6 +536,11 @@ void setup() {
   motorDriverBegin();
   motorEnable(false);
 
+  lcd.setCursor(0, 1);
+  printPadded("Remove magnet...");
+  delay(600);
+  gaussCalibrateZero();
+
   targetTurns = 1000;
   targetRpm = 300;
   syncDigitsFromTargets();
@@ -545,7 +550,7 @@ void setup() {
   attachInterrupt(digitalPinToInterrupt(ENC_A_PIN), handleEncoderInterrupt, CHANGE);
   attachInterrupt(digitalPinToInterrupt(ENC_B_PIN), handleEncoderInterrupt, CHANGE);
 
-  delay(400);
+  delay(200);
   drawManualScreen();
 }
 
@@ -573,9 +578,20 @@ void loop() {
   }
 
 #if USE_GAUSS_MONITOR
+  ScreenMode beforeGauss = screenMode;
   int sm = (int)screenMode;
   gaussUpdate(nowMs, sm, sm);
   screenMode = (ScreenMode)sm;
+  if (beforeGauss == SCREEN_GAUSS && screenMode != SCREEN_GAUSS) {
+    if (screenMode == SCREEN_MANUAL) {
+      drawManualScreen();
+    } else if (screenMode == SCREEN_PRESET_LIST) {
+      drawPresetListScreen();
+    } else {
+      drawManualScreen();
+      screenMode = SCREEN_MANUAL;
+    }
+  }
   if (screenMode == SCREEN_GAUSS) {
     if (lastScreenMode != SCREEN_GAUSS) {
       drawGaussScreen();
@@ -585,6 +601,7 @@ void loop() {
       drawGaussValues();
     }
     if (buttonEvent == BTN_LONG) {
+      gaussCalibrateZero();
       screenMode = (ScreenMode)gaussReturnScreenMode();
       if (screenMode == SCREEN_MANUAL) {
         drawManualScreen();

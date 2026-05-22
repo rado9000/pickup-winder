@@ -13,9 +13,8 @@ static bool isMenuScreen(int mode) {
 
 void gaussBegin() {
 #if USE_GAUSS_MONITOR
-  pinMode(HALL_ADC_PIN, INPUT);
+  pinMode(HALL_ADC_PIN, INPUT_PULLDOWN);
   analogReadResolution(12);
-  gaussCalibrateZero();
 #endif
 }
 
@@ -77,6 +76,7 @@ void gaussUpdate(uint32_t nowMs, int screenMode, int &ioScreenMode) {
       if (nowMs - gaussExitSinceMs_ >= GAUSS_EXIT_HOLD_MS) {
         gaussEnterSinceMs_ = 0;
         gaussExitSinceMs_ = 0;
+        gaussCalibrateZero();
         ioScreenMode = gaussReturnMode_;
       }
     } else {
