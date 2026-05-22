@@ -64,7 +64,7 @@ static float rampEase(float t) {
 
 static void setStepFrequency(float stepHz) {
   commandedStepHz_ = stepHz;
-  if (stepHz < RAMP_MIN_STEP_HZ) {
+  if (stepHz <= 0.0f) {
     analogWrite(STEP_PIN, 0);
     commandedStepHz_ = 0.0f;
     return;
@@ -107,7 +107,7 @@ static void updateRamp(uint32_t nowMs) {
 }
 
 static void updateStepCounting() {
-  if (commandedStepHz_ < RAMP_MIN_STEP_HZ) {
+  if (commandedStepHz_ <= 0.0f) {
     lastStepUpdateUs_ = micros();
     return;
   }
@@ -139,7 +139,9 @@ bool motorDirectionCW() {
 }
 
 void motorStartWinding(int startRpm, int targetRpm, bool preserveSteps) {
-  (void)startRpm;
+  if (startRpm < MIN_RPM) {
+    startRpm = MIN_RPM;
+  }
   if (!preserveSteps) {
     stepAccumulator_ = 0.0f;
   }
@@ -149,9 +151,10 @@ void motorStartWinding(int startRpm, int targetRpm, bool preserveSteps) {
   pauseRequested_ = false;
   menuRequested_ = false;
 #if USE_SOFT_START
-  commandedRpm_ = 0;
-  setStepFrequency(0.0f);
-  beginRampToTargetHz(rpmToStepHz(targetRpm), 0.0f);
+  commandedRpm_ = startRpm;
+  float startHz = rpmToStepHz(startRpm);
+  setStepFrequency(startHz);
+  beginRampToTargetHz(rpmToStepHz(targetRpm), startHz);
 #else
   commandedRpm_ = targetRpm;
   setStepFrequency(rpmToStepHz(targetRpm));

@@ -4,8 +4,7 @@
 
 void gaussBegin();
 void gaussCalibrateZero();
-void gaussUpdate(uint32_t nowMs, int screenMode, int &ioScreenMode, bool menuVisible);
+void gaussUpdate(uint32_t nowMs, int screenMode, int &ioScreenMode);
 
 float gaussValue();
-bool gaussActive();
-void gaussForceExit();
+int gaussReturnScreenMode();
