@@ -7,7 +7,7 @@ Firmware for a guitar pickup coil winder on **Raspberry Pi Pico (RP2040)**.
 - Manual mode at boot: turns (5 digits), RPM (4 digits), direction, soft start/stop
 - Up to 32 presets in emulated EEPROM
 - Hall rotation counting (A3144) and optional Gauss screen (AH49HZ3)
-- TMC2208 step/dir (optional UART tuning)
+- TMC2208 step/dir only (no UART)
 
 ## Documentation
 
@@ -17,7 +17,7 @@ Firmware for a guitar pickup coil winder on **Raspberry Pi Pico (RP2040)**.
 ## Merge (nowy + stary projekt)
 
 - UI, Gauss (auto-zero przy starcie), A3144, prewind — z nowszego firmware.
-- Napęd silnika — ze **starego** (`analogWrite` STEP + UART TMC + rampa), bo w nowym PWM na GP2 nie wchodził na obroty.
+- Napęd silnika — TMC2208 Step/Dir + `analogWrite` STEP + rampa (bez UART).
 
 Szczegóły kalibracji: [docs/HARDWARE.md](docs/HARDWARE.md). Wszystkie przełączniki: `src/config.h`.
 

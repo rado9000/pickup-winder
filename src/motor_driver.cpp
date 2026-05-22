@@ -1,15 +1,6 @@
 #include "motor_driver.h"
 #include "config.h"
 
-#if USE_TMC_UART
-#include <TMCStepper.h>
-#if USE_TMC2209
-static TMC2209Stepper tmcDriver(&Serial1, TMC_R_SENSE, TMC_UART_ADDRESS);
-#else
-static TMC2208Stepper tmcDriver(&Serial1, TMC_R_SENSE);
-#endif
-#endif
-
 static bool directionCW_ = true;
 static float commandedStepHz_ = 0.0f;
 static float stepAccumulator_ = 0.0f;
@@ -132,18 +123,6 @@ void motorDriverBegin() {
   pinMode(EN_PIN, OUTPUT);
   analogWrite(STEP_PIN, 0);
   motorEnable(false);
-
-#if USE_TMC_UART
-  Serial1.setTX(TMC_UART_TX_PIN);
-  Serial1.setRX(TMC_UART_RX_PIN);
-  Serial1.begin(115200);
-  tmcDriver.begin();
-  tmcDriver.toff(4);
-  tmcDriver.rms_current(TMC_RUN_CURRENT_MA);
-  tmcDriver.microsteps(MICROSTEP);
-  tmcDriver.intpol(true);
-  tmcDriver.pwm_autoscale(true);
-#endif
 }
 
 void motorSetDirection(bool cw) {
