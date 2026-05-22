@@ -32,7 +32,9 @@
 #define DIR_CW_LEVEL HIGH
 
 #define MIN_RPM 1
-#define MAX_RPM_USER 1500
+// Maks. RPM w menu i dla filtra A3144 (1 impuls/obrót przy magnesie diametrycznym)
+#define MAX_RPM_A3144 2000
+#define MAX_RPM_USER MAX_RPM_A3144
 #define TMC_R_SENSE 0.11f
 #define TMC_RUN_CURRENT_MA 1200
 #define TMC_UART_ADDRESS 0
@@ -49,11 +51,14 @@
 
 // --- A3144: magnes diametryczny na osi (jedno zbocze S→N na obrót) ---
 #define A3144_PULSES_PER_REV 1
-#define A3144_DEBOUNCE_US 2500
 // FALLING = przejście w stan aktywny (LOW przy pull-up)
 #define A3144_COUNT_ON_FALLING 1
-// Minimalny odstęp między impulsami (~połowa okresu przy max RPM)
-#define A3144_MIN_INTERVAL_US 15000
+// Okres impulsu [us] przy danym RPM: 60e6 / RPM  (2000 RPM => 30000 us)
+#define A3144_PERIOD_US(rpm) (60000000UL / (uint32_t)(rpm))
+// Debounce: drgania zbocza << czas obrotu; przy 2000 RPM okres 30 ms
+#define A3144_DEBOUNCE_US 800
+// Min. odstęp miedzy obrotami: 45% okresu @ MAX_RPM_A3144 => zlicza do 2000 RPM
+#define A3144_MIN_INTERVAL_US ((A3144_PERIOD_US(MAX_RPM_A3144) * 45UL) / 100UL)
 
 // --- Gauss (AH49HZ3) ---
 #define USE_GAUSS_MONITOR 1

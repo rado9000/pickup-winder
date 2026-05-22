@@ -18,12 +18,15 @@ Ten branch łączy:
 | A3144 | GP9 (INPUT_PULLUP) |
 | AH49HZ3 ADC | GP26 |
 
-## A3144 – magnes diametryczny na osie
+## A3144 – magnes diametryczny na osie (do 2000 RPM)
 
-- Jeden impuls na obrót przy zboczu **FALLING** (aktywny LOW).
-- Magnes: połówka **S** / połówka **N** wzdłuż średnicy; czujnik musi widzieć wyraźne przejście S→N (nie „zwykły” magnes z półki).
-- Filtr: `A3144_DEBOUNCE_US`, minimalny odstęp `A3144_MIN_INTERVAL_US` (ochrona przed podwójnym zliczeniem).
-- Jeśli brak impulsów: obróć magnes o 180° lub zmień `A3144_COUNT_ON_FALLING` na `0` (zbocze RISING) w `src/config.h`.
+- **1 impuls / obrót** przy zboczu **FALLING** (LOW przy pull-up) — przejście S→N w polu diametrycznym na osi.
+- Przy **2000 RPM** okres impulsu ≈ **30 ms** (33,3 Hz) — A3144 i ISR RP2040 to spokojnie obsługują.
+- Filtry w `config.h` (liczone automatycznie):
+  - `A3144_DEBOUNCE_US` = 800 µs (zbocze mechaniczne / drgania)
+  - `A3144_MIN_INTERVAL_US` = 45% okresu przy 2000 RPM ≈ **13,5 ms** (nie odrzuca obrotów do 2000 RPM)
+- Wyższe RPM w menu: ustaw `MAX_RPM_A3144` (domyślnie **2000**).
+- Jeśli brak impulsów: obróć magnes o 180° lub `A3144_COUNT_ON_FALLING` → `0` (RISING).
 
 ## Gauss – zerowanie przy starcie
 
@@ -36,7 +39,7 @@ Przy `setup()` wywoływane jest `gaussCalibrateZero()` (średnia z 64 próbek AD
 | `USE_TMC_UART` | 1 | Konfiguracja sterownika przez UART (zalecane) |
 | `USE_TMC2209` | 0 | 1 jeśli masz TMC2209 jak w starym projekcie |
 | `MICROSTEP` | 8 | Musi zgadzać się z MS1/MS2/MS3 (stary projekt: 1/8) |
-| `MAX_RPM_USER` | 1500 | Limit RPM w UI |
+| `MAX_RPM_A3144` | 2000 | Max RPM dla zliczania A3144 i UI |
 | `DIR_CW_LEVEL` | HIGH | Jak w starym projekcie; odwróć jeśli kręci w złą stronę |
 
 ## Kompilacja
