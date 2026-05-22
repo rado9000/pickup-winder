@@ -536,8 +536,6 @@ void setup() {
   motorDriverBegin();
   motorEnable(false);
 
-  lcd.setCursor(0, 1);
-  printPadded("Zeroing Gauss...");
   (void)gaussBootSetup();
 
   targetTurns = 1000;
