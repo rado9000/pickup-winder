@@ -1,579 +1,395 @@
 #include <Arduino.h>
+#include <EEPROM.h>
 #include <LiquidCrystal_I2C.h>
 #include <Wire.h>
 
+#include "a3144_counter.h"
 #include "config.h"
-#include "encoder.h"
-#include "gauss_meter.h"
-#include "motor.h"
-#include "presets.h"
-#include "rev_counter.h"
+#include "gauss_monitor.h"
+#include "motor_driver.h"
+#include "presets_store.h"
 
-// --- UI states ---
-enum class AppMode {
-  Manual,
-  PresetsMenu,
-  NewPresetTurns,
-  NewPresetDir,
-  NewPresetRpm,
-  NewPresetName,
-  PresetView,
-  Countdown,
-  Winding,
-  WindingPaused,
-  Complete,
-  GaussMeasure,
+LiquidCrystal_I2C lcd(LCD_I2C_ADDRESS, LCD_COLS, LCD_ROWS);
+
+enum ScreenMode {
+  SCREEN_MANUAL,
+  SCREEN_PRESET_LIST,
+  SCREEN_PRESET_NEW,
+  SCREEN_PRESET_NAME,
+  SCREEN_PRESET_VIEW,
+  SCREEN_PRESET_FULL,
+  SCREEN_PREWIND,
+  SCREEN_GAUSS = 90,
+  SCREEN_COUNTDOWN,
+  SCREEN_WINDING,
+  SCREEN_DONE
 };
 
-static LiquidCrystal_I2C lcd(LCD_I2C_ADDR, LCD_COLS, LCD_ROWS);
-static RotaryEncoder encoder;
-static StepMotor motor;
-static RevCounter revCounter;
-static PresetStore presets;
-static GaussMeter gaussMeter;
+enum ButtonEvent : uint8_t { BTN_NONE, BTN_CLICK, BTN_LONG };
 
-static AppMode mode = AppMode::Manual;
-static uint32_t blinkPhaseMs = 0;
+static ScreenMode screenMode = SCREEN_MANUAL;
+static ScreenMode lastScreenMode = SCREEN_MANUAL;
+static int manualField = 0, menuIndex = 0, presetIndex = 0, presetListOffset = 0;
+static int presetField = 0, nameIndex = 0, manualDigitIndex = 0, presetDigitIndex = 0;
+static char presetName[PRESET_NAME_LEN] = "PRESET";
+static int countdownValue = 3;
+static unsigned long countdownTickMs = 0;
+static bool windingPaused = false, blinkOn = true;
+static unsigned long blinkTickMs = 0, blinkDirty = false, windingUpdateMs = 0;
+static long targetTurns = 1000;
+static int targetRpm = 300;
+static bool targetDirectionCW = true;
+static int turnsDigits[TURN_DIGITS], rpmDigits[RPM_DIGITS];
+static volatile int encoderDelta = 0;
+static volatile uint8_t encoderState = 0;
+static int encoderAccum = 0;
+static unsigned long buttonDownMs = 0;
+static bool buttonWasDown = false;
+static long targetSteps = 0;
+static float turnsAccum = 0.0f;
+static float prewindStepCarry = 0.0f;
+static long prewindStepsQueued = 0;
+static uint32_t prewindLastStepUs = 0;
 
-// Manual / preset params
-static uint32_t editTurns = 100;
-static uint16_t editRpm = 300;
-static WindingDir editDir = WindingDir::CW;
-
-static int8_t digitField = 0;  // 0..4 turns, 5..8 rpm, 9 dir
-static int8_t activeDigit = 0;
-
-static uint8_t presetMenuIndex = 0;
-static uint8_t selectedPreset = 0;
-static char newPresetName[PRESET_NAME_LEN] = "Preset";
-static int8_t nameCharIndex = 0;
-
-static int countdown = 0;
-static uint32_t countdownAtMs = 0;
-
-static bool windingPaused = false;
-static bool resumeAfterPause = false;
-static int32_t turnsAtPause = 0;
-static int32_t targetTurnsRun = 0;
-
-static void lcdClearLine(uint8_t row) {
-  lcd.setCursor(0, row);
-  for (uint8_t c = 0; c < LCD_COLS; c++) {
-    lcd.print(' ');
+static ButtonEvent readButton() {
+  bool pressed = digitalRead(ENC_BTN_PIN) == LOW;
+  if (pressed && !buttonWasDown) { buttonDownMs = millis(); buttonWasDown = true; }
+  if (!pressed && buttonWasDown) {
+    unsigned long held = millis() - buttonDownMs;
+    buttonWasDown = false;
+    return held > LONG_PRESS_MS ? BTN_LONG : BTN_CLICK;
   }
+  return BTN_NONE;
 }
 
-static bool blinkOn() {
-  return ((millis() - blinkPhaseMs) / BLINK_MS) % 2 == 0;
+static void handleEncoderInterrupt() {
+  uint8_t state = (digitalRead(ENC_A_PIN) << 1) | digitalRead(ENC_B_PIN);
+  uint8_t combined = (encoderState << 2) | state;
+  static const int8_t table[16] = {0,-1,1,0,1,0,0,-1,-1,0,0,1,0,1,-1,0};
+  encoderDelta += table[combined];
+  encoderState = state;
 }
 
-static void formatTurns(char* buf, size_t n, uint32_t v, int8_t dig, bool blink) {
-  snprintf(buf, n, "%05lu", (unsigned long)v);
-  if (blink && blinkOn() && dig >= 0 && dig < 5) {
-    buf[4 - dig] = '_';
+static int readEncoderDetent() {
+  int delta = 0;
+  noInterrupts(); delta = encoderDelta; encoderDelta = 0; interrupts();
+  if (!delta) return 0;
+  encoderAccum += delta;
+  if (encoderAccum >= 4) { encoderAccum = 0; return 1; }
+  if (encoderAccum <= -4) { encoderAccum = 0; return -1; }
+  return 0;
+}
+
+static void printPadded(const char *text) {
+  lcd.print(text);
+  for (int i = strlen(text); i < 20; i++) lcd.print(' ');
+}
+
+static void valueToDigits(long v, int *d, int n) { for (int i=n-1;i>=0;i--){d[i]=v%10;v/=10;} }
+static long digitsToValue(const int *d, int n) { long v=0; for(int i=0;i<n;i++) v=v*10+d[i]; return v; }
+static int wrapDigit(int digit, int delta) { int v=(digit+delta)%10; return v<0?v+10:v; }
+
+static void syncDigitsFromTargets() {
+  valueToDigits(targetTurns, turnsDigits, TURN_DIGITS);
+  valueToDigits(targetRpm, rpmDigits, RPM_DIGITS);
+}
+static void clampTargets() {
+  if (targetTurns<1) targetTurns=1; else if(targetTurns>MAX_TURNS) targetTurns=MAX_TURNS;
+  if (targetRpm<MIN_RPM) targetRpm=MIN_RPM; else if(targetRpm>MAX_RPM_USER) targetRpm=MAX_RPM_USER;
+  syncDigitsFromTargets();
+}
+
+static void printDigitsLine(const char *label, const int *digits, int count, bool sel, int active) {
+  char line[21];
+  int off = snprintf(line,sizeof(line),"%s%s",sel?"> ":"  ",label);
+  for(int i=0;i<count&&off+i<20;i++)
+    line[off+i]=(sel&&i==active&&!blinkOn)?' ':(char)('0'+digits[i]);
+  for(int i=off+count;i<20;i++) line[i]=' ';
+  line[20]='\0'; printPadded(line);
+}
+
+static void drawManualScreen() {
+  lcd.clear(); lcd.setCursor(0,0); printPadded("Manual mode");
+  lcd.setCursor(0,1); printDigitsLine("Turns:",turnsDigits,TURN_DIGITS,manualField==0,manualField==0?manualDigitIndex:-1);
+  lcd.setCursor(0,2); printDigitsLine("RPM:",rpmDigits,RPM_DIGITS,manualField==1,manualField==1?manualDigitIndex:-1);
+  lcd.setCursor(0,3);
+  if(manualField==2){ char l[21]; snprintf(l,sizeof(l),"> Dir:%s",blinkOn?(targetDirectionCW?"CW":"CCW"):"  "); printPadded(l);}
+  else if(manualField==3) printPadded("> Start winding");
+  else printPadded("Hold: presets");
+}
+
+static void drawPresetListScreen() {
+  lcd.clear(); lcd.setCursor(0,0); printPadded("Presets");
+  int total=1+MAX_PRESETS;
+  if(menuIndex<presetListOffset) presetListOffset=menuIndex;
+  if(menuIndex>=presetListOffset+2) presetListOffset=menuIndex-1;
+  for(int row=0;row<2;row++){
+    int item=presetListOffset+row; lcd.setCursor(0,row+1);
+    if(item>=total){ printPadded(" "); continue; }
+    char line[21]; snprintf(line,sizeof(line),"%s",menuIndex==item?"> ":"  ");
+    int off=strlen(line);
+    if(item==0) snprintf(line+off,sizeof(line)-off,"New preset");
+    else snprintf(line+off,sizeof(line)-off,"%s",presets[item-1].valid?presets[item-1].name:"(empty)");
+    printPadded(line);
   }
+  lcd.setCursor(0,3); printPadded("Hold: back");
 }
 
-static void formatRpm(char* buf, size_t n, uint16_t v, int8_t dig, bool blink) {
-  snprintf(buf, n, "%04u", v);
-  if (blink && blinkOn() && dig >= 0 && dig < 4) {
-    buf[3 - dig] = '_';
-  }
+static void drawPresetNewScreen() {
+  lcd.clear(); lcd.setCursor(0,0); printPadded("New preset");
+  lcd.setCursor(0,1); printDigitsLine("Turns:",turnsDigits,TURN_DIGITS,presetField==0,presetField==0?presetDigitIndex:-1);
+  lcd.setCursor(0,2); printDigitsLine("RPM:",rpmDigits,RPM_DIGITS,presetField==1,presetField==1?presetDigitIndex:-1);
+  lcd.setCursor(0,3); char l[21]; snprintf(l,sizeof(l),"%s Dir:%s",presetField==2?"> ":" ",(presetField==2&&!blinkOn)?"  ":(targetDirectionCW?"CW":"CCW"));
+  printPadded(l);
 }
 
-static void drawManual() {
-  char t[8], r[8];
-  bool blink = true;
-  int8_t td = (digitField <= 4) ? activeDigit : -1;
-  int8_t rd = (digitField >= 5 && digitField <= 8) ? (activeDigit - 5) : -1;
-  formatTurns(t, sizeof t, editTurns, td, blink);
-  formatRpm(r, sizeof r, editRpm, rd, blink);
-  lcd.setCursor(0, 0);
-  lcd.print("Turns:");
-  lcd.print(t);
-  lcd.setCursor(0, 1);
-  lcd.print("RPM:");
-  lcd.print(r);
-  lcd.setCursor(0, 2);
-  lcd.print("Dir:");
-  lcd.print(editDir == WindingDir::CW ? "CW " : "CCW");
-  if (digitField == 9 && blinkOn()) {
-    lcd.print('*');
-  } else {
-    lcd.print(' ');
-  }
-  lcd.setCursor(0, 3);
-  lcd.print("> Start winding   ");
+static void drawPresetNameScreen() {
+  char dn[PRESET_NAME_LEN]; strncpy(dn,presetName,sizeof(dn));
+  if(!blinkOn&&nameIndex>=0&&nameIndex<(int)sizeof(dn)-1) dn[nameIndex]=' ';
+  lcd.clear(); lcd.setCursor(0,0); printPadded("Preset name");
+  lcd.setCursor(0,1); printPadded(dn);
+  lcd.setCursor(0,2); printPadded("Click: next");
+  lcd.setCursor(0,3); printPadded("Hold: save");
 }
 
-static void drawPresetsMenu() {
-  lcd.setCursor(0, 0);
-  lcd.print("Presets           ");
-  lcd.setCursor(0, 1);
-  if (presetMenuIndex == 0) {
-    lcd.print(blinkOn() ? "> New preset      " : "  New preset      ");
-  } else {
-    lcd.print("  New preset      ");
-  }
-  Preset p{};
-  if (presetMenuIndex > 0 && presets.get(presetMenuIndex - 1, p)) {
-    lcd.setCursor(0, 2);
-    char line[21];
-    snprintf(line, sizeof line, "%c %-16s", presetMenuIndex == 1 ? '>' : ' ', p.name);
-    lcd.print(line);
-  } else {
-    lcdClearLine(2);
-  }
-  lcdClearLine(3);
+static void drawPresetViewScreen() {
+  lcd.clear(); lcd.setCursor(0,0); printPadded(presets[presetIndex].name);
+  char l[21];
+  lcd.setCursor(0,1); snprintf(l,sizeof(l),"Turns: %ld",presets[presetIndex].turns); printPadded(l);
+  lcd.setCursor(0,2); snprintf(l,sizeof(l),"RPM: %d",presets[presetIndex].rpm); printPadded(l);
+  lcd.setCursor(0,3); snprintf(l,sizeof(l),"Dir: %s",presets[presetIndex].directionCW?"CW":"CCW"); printPadded(l);
 }
 
-static void drawPresetView(const Preset& p) {
-  lcd.setCursor(0, 0);
-  lcd.print(p.name);
-  lcd.setCursor(0, 1);
-  lcd.printf("T:%lu RPM:%u", (unsigned long)p.turns, p.rpm);
-  lcd.setCursor(0, 2);
-  lcd.print(p.dir == WindingDir::CW ? "Dir: CW" : "Dir:CCW");
-  lcd.setCursor(0, 3);
-  lcd.print("Click to start    ");
+static void drawGaussScreen() {
+  lcd.clear(); lcd.setCursor(0,0); printPadded("Magnet gauss meter");
+  lcd.setCursor(0,2); printPadded("Auto-hide <50G");
+}
+static void drawGaussValues() {
+  lcd.setCursor(0,1); char l[21]; float g=gaussValue(); float a=fabsf(g);
+  const char *pole="CENTER";
+  if(g>=GAUSS_ENTER_THRESHOLD) pole="N"; else if(g<=-GAUSS_ENTER_THRESHOLD) pole="S";
+  snprintf(l,sizeof(l),"G:%7.1f  Pole:%s",a,pole); printPadded(l);
 }
 
-static void drawNewPreset(const char* label, const char* valueLine) {
-  lcd.setCursor(0, 0);
-  lcd.print(label);
-  lcd.setCursor(0, 1);
-  lcd.print(valueLine);
-  lcdClearLine(2);
-  lcdClearLine(3);
+static void drawPrewindScreen() {
+  lcd.clear(); lcd.setCursor(0,0); printPadded("Prewind mode");
+  lcd.setCursor(0,1); printPadded("Rotate encoder");
+  lcd.setCursor(0,2); printPadded("Click: start");
+  lcd.setCursor(0,3); printPadded("Hold: cancel");
+}
+static void drawProgressLine() {
+  lcd.setCursor(0,1); char l[21];
+  long t=(long)a3144Turns(); if(t<0)t=0;
+  long pct=targetTurns>0?(t*100L)/targetTurns:0;
+  snprintf(l,sizeof(l),"Turns:%5ld %3ld%%",t,pct); printPadded(l);
+}
+static void drawCountdownScreen() {
+  lcd.clear(); lcd.setCursor(0,0); printPadded("Get ready");
+  lcd.setCursor(0,2); char l[21]; snprintf(l,sizeof(l),"Starting in: %d",countdownValue); printPadded(l);
+}
+static void drawWindingScreen() {
+  lcd.clear(); lcd.setCursor(0,0); printPadded("Pickup winding");
+  lcd.setCursor(0,2); printPadded("Press to pause");
+}
+static void drawPausedScreen() {
+  lcd.setCursor(0,0); printPadded("Paused (hold menu)");
+  long t=(long)a3144Turns(); char l[21];
+  lcd.setCursor(0,1); snprintf(l,sizeof(l),"Turns: %ld/%ld",t,targetTurns); printPadded(l);
+  lcd.setCursor(0,3); printPadded("Press: resume");
+}
+static void drawDoneScreen() {
+  lcd.clear(); lcd.setCursor(0,1); printPadded("Winding complete");
+  lcd.setCursor(0,2); printPadded("Press to return");
 }
 
-static void drawCountdown() {
-  lcd.setCursor(0, 1);
-  lcd.printf("      %d          ", countdown);
+static char nextNameChar(char c,int d){
+  const char cs[]=" ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789";
+  int n=sizeof(cs)-1,idx=0; for(int i=0;i<n;i++) if(cs[i]==c){idx=i;break;}
+  idx=(idx+d)%n; if(idx<0) idx+=n; return cs[idx];
 }
 
-static void drawWinding(bool paused) {
-  lcd.setCursor(0, 0);
-  lcd.print(paused ? "PAUSED" : "Winding...");
-  lcd.setCursor(0, 1);
-  lcd.printf("Turn %ld/%ld", (long)revCounter.turns(), (long)targetTurnsRun);
-  lcd.setCursor(0, 2);
-  lcd.printf("RPM %u", motor.currentRpm());
-  lcd.setCursor(0, 3);
-  lcd.print(paused ? "Hold: menu" : "Click: pause");
+static void enterPrewind() {
+  screenMode=SCREEN_PREWIND;
+  motorResetStepAccumulator(); turnsAccum=0; a3144Reset();
+  prewindStepCarry=0; prewindStepsQueued=0; prewindLastStepUs=micros();
+  windingPaused=false; targetSteps=targetTurns*COUNT_STEPS_PER_REV;
+  motorEnable(true); motorSetDirection(targetDirectionCW);
+  a3144SetTargetDirection(targetDirectionCW); a3144OnMotorDirection(targetDirectionCW);
+  analogWrite(STEP_PIN,0); windingUpdateMs=millis(); drawPrewindScreen();
 }
 
-static void drawComplete() {
-  lcd.setCursor(0, 1);
-  lcd.print(" Winding complete ");
-  lcd.setCursor(0, 3);
-  lcd.print("  Click to exit   ");
+static void startCountdownFromPrewind() {
+  prewindStepsQueued=0; prewindStepCarry=0; analogWrite(STEP_PIN,0);
+  screenMode=SCREEN_COUNTDOWN; countdownValue=3; countdownTickMs=millis(); drawCountdownScreen();
 }
 
-static void drawGauss() {
-  lcd.setCursor(0, 0);
-  lcd.print("Gauss meter       ");
-  lcd.setCursor(0, 1);
-  lcd.printf("%+.1f G           ", gaussMeter.gauss());
-  lcd.setCursor(0, 3);
-  lcd.print("Remove field=back ");
-}
-
-static void clampTurns() {
-  if (editTurns < MIN_TURNS) {
-    editTurns = MIN_TURNS;
-  }
-  if (editTurns > MAX_TURNS) {
-    editTurns = MAX_TURNS;
-  }
-}
-
-static void clampRpm() {
-  if (editRpm < MIN_RPM) {
-    editRpm = MIN_RPM;
-  }
-  if (editRpm > MAX_RPM_USER) {
-    editRpm = MAX_RPM_USER;
-  }
-}
-
-static void adjustDigit(uint32_t& value, int8_t dig, int delta, uint32_t maxVal) {
-  uint32_t place = 1;
-  for (int i = 0; i < dig; i++) {
-    place *= 10;
-  }
-  int32_t digit = (value / place) % 10;
-  digit += delta;
-  if (digit > 9) {
-    digit = 0;
-  }
-  if (digit < 0) {
-    digit = 9;
-  }
-  value = (value / (place * 10)) * (place * 10) + (value % place) + (uint32_t)digit * place;
-  if (value > maxVal) {
-    value = maxVal;
-  }
-  if (value == 0 && maxVal >= 1) {
-    value = 1;
-  }
-}
-
-static void adjustDigitU16(uint16_t& value, int8_t dig, int delta, uint16_t maxVal) {
-  uint32_t v = value;
-  adjustDigit(v, dig, delta, maxVal);
-  value = (uint16_t)v;
-}
-
-static void startCountdown(bool resume = false) {
-  mode = AppMode::Countdown;
-  resumeAfterPause = resume;
-  countdown = COUNTDOWN_START;
-  countdownAtMs = millis();
+static void startWindingNow() {
+  clampTargets();
+  screenMode=SCREEN_WINDING;
+  motorEnable(true);
   lcd.clear();
-}
-
-static void beginWinding(uint32_t turns, uint16_t rpm, WindingDir dir) {
-  targetTurnsRun = (int32_t)turns;
-  editRpm = rpm;
-  motor.setDirection(dir);
-  revCounter.setMotorDirection(dir);
-  revCounter.reset();
-  revCounter.setTargetTurns(targetTurnsRun);
-  motor.enable(true);
-  motor.setTargetRpm(rpm);
-  mode = AppMode::Winding;
-  windingPaused = false;
-}
-
-static void stopMotorRamp() {
-  motor.setTargetRpm(0);
-}
-
-static void advanceField() {
-  if (digitField < 9) {
-    digitField++;
-    if (digitField <= 4) {
-      activeDigit = digitField;
-    } else if (digitField <= 8) {
-      activeDigit = digitField;
-    } else {
-      activeDigit = 0;
-    }
-  } else {
-    digitField = 0;
-    activeDigit = 0;
-  }
-}
-
-static void handleManualEncoder(int d, bool click, bool longPress) {
-  if (longPress) {
-    mode = AppMode::PresetsMenu;
-    presetMenuIndex = 0;
-    lcd.clear();
-    return;
-  }
-  if (d != 0) {
-    if (digitField <= 4) {
-      adjustDigit(editTurns, activeDigit, d > 0 ? 1 : -1, MAX_TURNS);
-      clampTurns();
-    } else if (digitField <= 8) {
-      adjustDigitU16(editRpm, activeDigit - 5, d > 0 ? 1 : -1, MAX_RPM_USER);
-      clampRpm();
-    } else {
-      editDir = (d > 0) ? WindingDir::CW : WindingDir::CCW;
-    }
-  }
-  if (click) {
-    if (digitField == 9) {
-      startCountdown(false);
-    } else {
-      advanceField();
-    }
-  }
-}
-
-static void handlePresets(int d, bool click, bool longPress) {
-  if (longPress) {
-    mode = AppMode::Manual;
-    lcd.clear();
-    return;
-  }
-  uint8_t items = presets.count() + 1;
-  if (d != 0) {
-    if (d > 0) {
-      presetMenuIndex = (presetMenuIndex + 1) % items;
-    } else {
-      presetMenuIndex = (presetMenuIndex + items - 1) % items;
-    }
-  }
-  if (click) {
-    if (presetMenuIndex == 0) {
-      mode = AppMode::NewPresetTurns;
-      digitField = 0;
-      activeDigit = 0;
-      editTurns = 100;
-      lcd.clear();
-    } else {
-      selectedPreset = presetMenuIndex - 1;
-      Preset p{};
-      if (presets.get(selectedPreset, p)) {
-        editTurns = p.turns;
-        editRpm = p.rpm;
-        editDir = p.dir;
-        mode = AppMode::PresetView;
-        lcd.clear();
-      }
-    }
-  }
-}
-
-static void handleNewPreset(int d, bool click, bool longPress) {
-  if (longPress && mode == AppMode::NewPresetName) {
-    Preset p{};
-    strncpy(p.name, newPresetName, PRESET_NAME_LEN - 1);
-    p.turns = editTurns;
-    p.rpm = editRpm;
-    p.dir = editDir;
-    presets.save(p);
-    mode = AppMode::PresetsMenu;
-    lcd.clear();
-    return;
-  }
-  if (longPress) {
-    mode = AppMode::PresetsMenu;
-    lcd.clear();
-    return;
-  }
-  if (mode == AppMode::NewPresetTurns) {
-    if (d != 0) {
-      adjustDigit(editTurns, activeDigit, d > 0 ? 1 : -1, MAX_TURNS);
-      clampTurns();
-    }
-    if (click) {
-      mode = AppMode::NewPresetDir;
-      digitField = 9;
-    }
-  } else if (mode == AppMode::NewPresetDir) {
-    if (d != 0) {
-      editDir = (d > 0) ? WindingDir::CW : WindingDir::CCW;
-    }
-    if (click) {
-      mode = AppMode::NewPresetRpm;
-      activeDigit = 0;
-      digitField = 5;
-    }
-  } else if (mode == AppMode::NewPresetRpm) {
-    if (d != 0) {
-      adjustDigitU16(editRpm, activeDigit - 5, d > 0 ? 1 : -1, MAX_RPM_USER);
-      clampRpm();
-    }
-    if (click) {
-      mode = AppMode::NewPresetName;
-      nameCharIndex = 0;
-    }
-  } else if (mode == AppMode::NewPresetName) {
-    if (d != 0) {
-      char c = newPresetName[nameCharIndex];
-      if (c == 0) {
-        c = 'A';
-      }
-      c += (d > 0) ? 1 : -1;
-      if (c < ' ') {
-        c = '~';
-      }
-      if (c > '~') {
-        c = ' ';
-      }
-      newPresetName[nameCharIndex] = c;
-    }
-    if (click) {
-      if (newPresetName[nameCharIndex] == 0) {
-        newPresetName[nameCharIndex] = 'A';
-      }
-      nameCharIndex++;
-      if (nameCharIndex >= PRESET_NAME_LEN - 1) {
-        nameCharIndex = PRESET_NAME_LEN - 2;
-      }
-      newPresetName[nameCharIndex] = 0;
-    }
-  }
-}
-
-static void handleWinding(int d, bool click, bool longPress) {
-  (void)d;
-  if (mode == AppMode::WindingPaused && longPress) {
-    stopMotorRamp();
-    motor.enable(false);
-    mode = AppMode::Manual;
-    lcd.clear();
-    return;
-  }
-  if (click && mode == AppMode::Winding) {
-    stopMotorRamp();
-    while (!motor.isStopped()) {
-      motor.tick();
-      delay(1);
-    }
-    motor.enable(false);
-    turnsAtPause = revCounter.turns();
-    mode = AppMode::WindingPaused;
-    windingPaused = true;
-    lcd.clear();
-    return;
-  }
-  if (click && mode == AppMode::WindingPaused) {
-    startCountdown(false);
-    return;
-  }
+  motorSetDirection(targetDirectionCW);
+  a3144SetTargetDirection(targetDirectionCW);
+  a3144OnMotorDirection(targetDirectionCW);
+  motorStartWinding(MIN_RPM, targetRpm, true);
+  windingUpdateMs=millis();
+  drawWindingScreen();
 }
 
 void setup() {
-  Wire.setSDA(LCD_SDA_PIN);
-  Wire.setSCL(LCD_SCL_PIN);
-  Wire.begin();
-
-  lcd.init();
-  lcd.backlight();
-  lcd.clear();
-  lcd.print("Pickup winder");
-  lcd.setCursor(0, 1);
-  lcd.print("Manual mode");
-
-  encoder.begin(ENCODER_CLK_PIN, ENCODER_DT_PIN, ENCODER_SW_PIN);
-  encoder.setLongPressMs(LONG_PRESS_MS);
-
-  motor.begin(STEP_PIN, DIR_PIN, MOTOR_EN_PIN);
-#if USE_TMC2208_UART
-  motor.setupTmc2208Uart();
-#endif
-
-  revCounter.begin(A3144_PIN, A3144_DEBOUNCE_US);
-  presets.begin();
-  gaussMeter.begin(GAUSS_ADC_PIN);
-
-  digitField = 0;
-  activeDigit = 0;
-  delay(800);
-  lcd.clear();
+  Wire.setSDA(I2C_SDA_PIN); Wire.setSCL(I2C_SCL_PIN);
+  Wire.begin(); Wire.setClock(100000);
+  pinMode(ENC_A_PIN,INPUT_PULLUP); pinMode(ENC_B_PIN,INPUT_PULLUP); pinMode(ENC_BTN_PIN,INPUT_PULLUP);
+  lcd.init(); lcd.backlight();
+  lcd.clear(); lcd.setCursor(0,0); printPadded("Pickup winder");
+  lcd.setCursor(0,1); printPadded("Zeroing sensors...");
+  presetsBegin(); presetsLoad();
+  gaussBegin();
+  a3144Begin();
+  motorDriverBegin();
+  motorEnable(false);
+  valueToDigits(targetTurns,turnsDigits,TURN_DIGITS);
+  valueToDigits(targetRpm,rpmDigits,RPM_DIGITS);
+  blinkTickMs=millis();
+  encoderState=(digitalRead(ENC_A_PIN)<<1)|digitalRead(ENC_B_PIN);
+  attachInterrupt(digitalPinToInterrupt(ENC_A_PIN),handleEncoderInterrupt,CHANGE);
+  attachInterrupt(digitalPinToInterrupt(ENC_B_PIN),handleEncoderInterrupt,CHANGE);
+  delay(300);
+  drawManualScreen();
 }
 
 void loop() {
-  encoder.update();
-  int d = encoder.delta();
-  bool click = encoder.clicked();
-  bool longPress = encoder.longPressed();
+  ButtonEvent btn=readButton();
+  unsigned long nowMs=millis();
+  int delta=readEncoderDetent();
+  bool allowBlink=(screenMode==SCREEN_MANUAL&&manualField<=2)||screenMode==SCREEN_PRESET_NEW||screenMode==SCREEN_PRESET_NAME;
+  if(allowBlink && nowMs-blinkTickMs>=BLINK_MS){ blinkTickMs=nowMs; blinkOn=!blinkOn; blinkDirty=true; }
+  if(screenMode!=lastScreenMode){ lastScreenMode=screenMode; blinkDirty=false; }
 
-  gaussMeter.update();
-  if (gaussMeter.active() && mode != AppMode::GaussMeasure && mode != AppMode::Winding &&
-      mode != AppMode::Countdown) {
-    mode = AppMode::GaussMeasure;
-    lcd.clear();
+  int sm=(int)screenMode;
+  gaussUpdate(nowMs, sm, sm, true);
+  screenMode=(ScreenMode)sm;
+  if(screenMode==SCREEN_GAUSS && lastScreenMode!=SCREEN_GAUSS){ drawGaussScreen(); drawGaussValues(); windingUpdateMs=nowMs; }
+  if(screenMode==SCREEN_GAUSS){
+    if(nowMs-windingUpdateMs>=WINDING_UI_INTERVAL_MS){ windingUpdateMs=nowMs; drawGaussValues(); }
+    if(btn==BTN_LONG){ gaussForceExit(); screenMode=(ScreenMode)SCREEN_MANUAL; drawManualScreen(); }
+    return;
   }
-  if (mode == AppMode::GaussMeasure && !gaussMeter.active()) {
-    mode = AppMode::Manual;
-    lcd.clear();
-  }
 
-  motor.tick();
-  revCounter.setMotorDirection(motor.direction());
+  turnsAccum=a3144Turns();
 
-  switch (mode) {
-    case AppMode::Manual:
-      handleManualEncoder(d, click, longPress);
-      drawManual();
-      break;
-    case AppMode::PresetsMenu:
-      handlePresets(d, click, longPress);
-      drawPresetsMenu();
-      break;
-    case AppMode::NewPresetTurns:
-    case AppMode::NewPresetDir:
-    case AppMode::NewPresetRpm:
-    case AppMode::NewPresetName:
-      handleNewPreset(d, click, longPress);
-      if (mode == AppMode::NewPresetTurns) {
-        char t[8];
-        formatTurns(t, sizeof t, editTurns, activeDigit, true);
-        drawNewPreset("New: turns", t);
-      } else if (mode == AppMode::NewPresetDir) {
-        drawNewPreset("New: direction", editDir == WindingDir::CW ? "CW" : "CCW");
-      } else if (mode == AppMode::NewPresetRpm) {
-        char r[8];
-        formatRpm(r, sizeof r, editRpm, activeDigit - 5, true);
-        drawNewPreset("New: RPM", r);
-      } else {
-        char line[21];
-        snprintf(line, sizeof line, "Name: %s", newPresetName);
-        if (blinkOn()) {
-          size_t pos = 6 + (size_t)nameCharIndex;
-          if (pos < sizeof line - 1) {
-            line[pos] = '_';
-          }
-        }
-        drawNewPreset("New: name", line);
+  switch(screenMode){
+  case SCREEN_MANUAL:
+    if(delta){
+      if(manualField==0){turnsDigits[manualDigitIndex]=wrapDigit(turnsDigits[manualDigitIndex],delta);targetTurns=digitsToValue(turnsDigits,TURN_DIGITS);}
+      else if(manualField==1){rpmDigits[manualDigitIndex]=wrapDigit(rpmDigits[manualDigitIndex],delta);targetRpm=digitsToValue(rpmDigits,RPM_DIGITS);}
+      else if(manualField==2) targetDirectionCW=delta>0;
+      drawManualScreen();
+    }
+    if(btn==BTN_CLICK){
+      if(manualField==0){manualDigitIndex++; if(manualDigitIndex>=TURN_DIGITS){manualDigitIndex=0;manualField=1;} clampTargets(); drawManualScreen();}
+      else if(manualField==1){manualDigitIndex++; if(manualDigitIndex>=RPM_DIGITS){manualDigitIndex=0;manualField=2;} clampTargets(); drawManualScreen();}
+      else if(manualField==2){manualField=3; drawManualScreen();}
+      else enterPrewind();
+    } else if(btn==BTN_LONG){ screenMode=SCREEN_PRESET_LIST; menuIndex=0; drawPresetListScreen(); }
+    break;
+
+  case SCREEN_PRESET_LIST:
+    if(delta){ menuIndex=constrain(menuIndex+delta,0,MAX_PRESETS); drawPresetListScreen(); }
+    if(btn==BTN_CLICK){
+      if(menuIndex==0){ screenMode=SCREEN_PRESET_NEW; presetField=0; drawPresetNewScreen(); }
+      else { presetIndex=menuIndex-1; if(presets[presetIndex].valid){ screenMode=SCREEN_PRESET_VIEW; drawPresetViewScreen(); } }
+    } else if(btn==BTN_LONG){ screenMode=SCREEN_MANUAL; drawManualScreen(); }
+    break;
+
+  case SCREEN_PRESET_NEW:
+    if(delta){
+      if(presetField==0){turnsDigits[presetDigitIndex]=wrapDigit(turnsDigits[presetDigitIndex],delta);targetTurns=digitsToValue(turnsDigits,TURN_DIGITS);}
+      else if(presetField==1){rpmDigits[presetDigitIndex]=wrapDigit(rpmDigits[presetDigitIndex],delta);targetRpm=digitsToValue(rpmDigits,RPM_DIGITS);}
+      else targetDirectionCW=delta>0;
+      drawPresetNewScreen();
+    }
+    if(btn==BTN_CLICK){
+      if(presetField==0){presetDigitIndex++; if(presetDigitIndex>=TURN_DIGITS){presetDigitIndex=0;presetField=1;} clampTargets(); drawPresetNewScreen();}
+      else if(presetField==1){presetDigitIndex++; if(presetDigitIndex>=RPM_DIGITS){presetDigitIndex=0;presetField=2;} clampTargets(); drawPresetNewScreen();}
+      else { screenMode=SCREEN_PRESET_NAME; strncpy(presetName,"PRESET",sizeof(presetName)-1); nameIndex=0; drawPresetNameScreen(); }
+    } else if(btn==BTN_LONG){ screenMode=SCREEN_PRESET_LIST; drawPresetListScreen(); }
+    break;
+
+  case SCREEN_PRESET_NAME:
+    if(delta){ presetName[nameIndex]=nextNameChar(presetName[nameIndex],delta); drawPresetNameScreen(); }
+    if(btn==BTN_CLICK){ nameIndex++; if(nameIndex>=PRESET_NAME_LEN-1) nameIndex=0; drawPresetNameScreen(); }
+    else if(btn==BTN_LONG){
+      int slot=presetsFindEmptySlot();
+      if(slot<0){ screenMode=SCREEN_PRESET_FULL; lcd.clear(); lcd.setCursor(0,0); printPadded("Memory full"); }
+      else {
+        Preset p{}; strncpy(p.name,presetName,sizeof(p.name)-1); p.turns=targetTurns; p.rpm=min(targetRpm,MAX_RPM_USER);
+        p.directionCW=targetDirectionCW; p.valid=true; presetsSave(slot,p);
+        screenMode=SCREEN_PRESET_LIST; drawPresetListScreen();
       }
-      break;
-    case AppMode::PresetView: {
-      Preset p{};
-      if (presets.get(selectedPreset, p)) {
-        drawPresetView(p);
-        if (click) {
-          editTurns = p.turns;
-          editRpm = p.rpm;
-          editDir = p.dir;
-          startCountdown(false);
-        }
+    }
+    break;
+
+  case SCREEN_PRESET_VIEW:
+    if(btn==BTN_CLICK){
+      targetTurns=presets[presetIndex].turns; targetRpm=min(presets[presetIndex].rpm,MAX_RPM_USER);
+      targetDirectionCW=presets[presetIndex].directionCW; syncDigitsFromTargets(); enterPrewind();
+    } else if(btn==BTN_LONG){ presetsDelete(presetIndex); screenMode=SCREEN_PRESET_LIST; drawPresetListScreen(); }
+    break;
+
+  case SCREEN_PREWIND:
+    if(btn==BTN_CLICK) startCountdownFromPrewind();
+    else if(btn==BTN_LONG){ motorEnable(false); analogWrite(STEP_PIN,0); screenMode=SCREEN_MANUAL; drawManualScreen(); }
+    else if(delta){
+      float spd=(float)STEPS_PER_REV/(float)ENCODER_DETENTS_PER_REV;
+      prewindStepCarry+=spd*(float)delta;
+      long steps=(long)prewindStepCarry;
+      if(steps){ prewindStepCarry-=(float)steps; prewindStepsQueued+=steps; }
+    }
+    if(prewindStepsQueued){
+      uint32_t nowUs=micros();
+      if(nowUs-prewindLastStepUs>=PREWIND_STEP_INTERVAL_US){
+        prewindLastStepUs=nowUs;
+        bool cw=prewindStepsQueued>0?targetDirectionCW:!targetDirectionCW;
+        motorSingleStep(cw); a3144OnMotorDirection(cw);
+        prewindStepsQueued+=(prewindStepsQueued>0)?-1:1;
       }
+    }
+    if(nowMs-windingUpdateMs>=WINDING_UI_INTERVAL_MS){ windingUpdateMs=nowMs; drawProgressLine(); }
+    break;
+
+  case SCREEN_COUNTDOWN:
+    if(btn==BTN_CLICK) startWindingNow();
+    else if(nowMs-countdownTickMs>=1000){
+      countdownTickMs=nowMs; countdownValue--;
+      if(countdownValue<0) startWindingNow(); else drawCountdownScreen();
+    }
+    break;
+
+  case SCREEN_WINDING:
+    motorUpdate(nowMs);
+    a3144OnMotorDirection(motorDirectionCW());
+    if(windingPaused){
+      if(btn==BTN_CLICK){ windingPaused=false; screenMode=SCREEN_COUNTDOWN; countdownValue=3; countdownTickMs=millis(); drawCountdownScreen(); }
+      else if(btn==BTN_LONG){ windingPaused=false; motorStopImmediate(); motorEnable(false); screenMode=SCREEN_MANUAL; drawManualScreen(); }
       break;
     }
-    case AppMode::Countdown:
-      if (millis() - countdownAtMs >= 1000) {
-        countdownAtMs = millis();
-        countdown--;
-        if (countdown < 0) {
-          if (resumeAfterPause) {
-            int32_t remain = targetTurnsRun - turnsAtPause;
-            if (remain < 1) {
-              remain = 1;
-            }
-            targetTurnsRun = remain;
-            revCounter.setTargetTurns(remain);
-            motor.setDirection(editDir);
-            revCounter.setMotorDirection(editDir);
-            motor.enable(true);
-            motor.setTargetRpm(editRpm);
-            mode = AppMode::Winding;
-            windingPaused = false;
-            resumeAfterPause = false;
-          } else {
-            beginWinding(editTurns, editRpm, editDir);
-          }
-          lcd.clear();
-        }
-      }
-      drawCountdown();
+    if(btn==BTN_CLICK) motorRequestStop(false,true,false);
+    else if(btn==BTN_LONG) motorRequestStop(false,false,true);
+    if(motorStopPending() && !motorRampActive()){
+      motorStopImmediate(); motorEnable(false);
+      if(motorStopForCompletion()){ screenMode=SCREEN_DONE; drawDoneScreen(); }
+      else if(motorStopPause()){ windingPaused=true; lcd.clear(); drawPausedScreen(); }
+      else if(motorStopToMenu()){ screenMode=SCREEN_MANUAL; drawManualScreen(); }
       break;
-    case AppMode::Winding:
-    case AppMode::WindingPaused:
-      handleWinding(d, click, longPress);
-      if (mode == AppMode::Winding && revCounter.targetReached()) {
-        stopMotorRamp();
-        motor.enable(false);
-        mode = AppMode::Complete;
-        lcd.clear();
-      }
-      drawWinding(mode == AppMode::WindingPaused);
-      break;
-    case AppMode::Complete:
-      drawComplete();
-      if (click) {
-        mode = AppMode::Manual;
-        lcd.clear();
-      }
-      break;
-    case AppMode::GaussMeasure:
-      drawGauss();
-      break;
+    }
+    if(turnsAccum>=(float)targetTurns) motorRequestStop(true,false,false);
+    else if(nowMs-windingUpdateMs>=WINDING_UI_INTERVAL_MS){ windingUpdateMs=nowMs; drawProgressLine(); }
+    break;
+
+  case SCREEN_DONE:
+    if(btn==BTN_CLICK){ screenMode=SCREEN_MANUAL; drawManualScreen(); }
+    break;
+  default: break;
   }
 }

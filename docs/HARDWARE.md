@@ -1,105 +1,43 @@
-# Pickup winder – funkcje i schemat połączeń
+# Pickup winder – sprzęt i kalibracja
 
-## Założenia funkcjonalne
+## Scalony firmware (nowy UI + stary napęd)
 
-- **Tryb Manual** (start po uruchomieniu):
-  - wybór liczby zwojów (5 cyfr) i prędkości (4 cyfry) oraz kierunku,
-  - obrót zmienia aktywną cyfrę,
-  - kliknięcie przechodzi do kolejnej cyfry, a po niej do następnego pola,
-  - aktywne pole miga, aby wskazać edycję,
-  - pole **Start winding** uruchamia nawijanie,
-  - dłuższe przytrzymanie otwiera **Presets**.
-- **Menu Presets**:
-  - pierwsza opcja: **New preset**,
-  - poniżej zapisane presety,
-  - dłuższe przytrzymanie wraca do Manual.
-- **New preset**:
-  - pytania o liczbę zwojów, kierunek i prędkość (edycja cyfr),
-  - aktywne pole miga (cyfry lub znak nazwy),
-  - następnie edycja nazwy (obrót = zmiana znaku, klik = kolejny znak),
-  - dłuższe przytrzymanie zapisuje do EEPROM.
-- **Uruchomienie presetów**:
-  - po wybraniu presetu pokazuje parametry,
-  - kliknięcie = start nawijania.
-- **Zakończenie**:
-  - komunikat **Winding complete**,
-  - powrót do menu dopiero po kliknięciu.
-- **Soft start/stop**:
-  - rampa prędkości przy starcie i łagodne hamowanie przy zatrzymaniu.
-- **Stop/Resume**:
-  - kliknięcie w trakcie nawijania uruchamia hamowanie do zera i zatrzymuje silnik,
-  - kolejne kliknięcie uruchamia odliczanie 3..0 i wznawia nawijanie.
-- **Wyjście do menu po pauzie**:
-  - dłuższe przytrzymanie podczas pauzy wraca do Manual.
-- **Odliczanie startu**:
-  - każde uruchomienie nawijania (manual i preset) wyświetla 3..0.
+Ten branch łączy:
 
-## Połączenia (RP2040 / Raspberry Pi Pico)
+- **Z nowego projektu:** menu, presety (32), Gauss z auto-zerowaniem przy starcie, prewind, A3144, odliczanie 3..0.
+- **Ze starego (działającego) projektu:** `analogWrite` + `analogWriteFreq` na STEP, rampa RPM, **UART TMC** (prąd + mikrokrok), kierunek DIR jak w starym kodzie (`DIR_CW_LEVEL = HIGH`).
 
-### LCD 2004A (HD44780, I2C backpack)
+## Mapowanie pinów
 
-| LCD | RP2040 |
+| Moduł | GPIO |
 | --- | --- |
-| SDA | GP0 |
-| SCL | GP1 |
-| VCC | 5V |
-| GND | GND |
+| LCD I2C SDA/SCL | GP0 / GP1 |
+| STEP / DIR / EN | GP2 / GP3 / GP10 |
+| TMC UART TX/RX | GP4 / GP5 |
+| Enkoder A/B/SW | GP6 / GP7 / GP8 |
+| A3144 | GP9 (INPUT_PULLUP) |
+| AH49HZ3 ADC | GP26 |
 
-### Enkoder z przyciskiem
+## A3144 – magnes diametryczny na osie
 
-| Enkoder | RP2040 |
-| --- | --- |
-| CLK | GP6 |
-| DT | GP7 |
-| SW | GP8 |
-| + | 3.3V lub 5V (zgodnie z modułem) |
-| GND | GND |
+- Jeden impuls na obrót przy zboczu **FALLING** (aktywny LOW).
+- Magnes: połówka **S** / połówka **N** wzdłuż średnicy; czujnik musi widzieć wyraźne przejście S→N (nie „zwykły” magnes z półki).
+- Filtr: `A3144_DEBOUNCE_US`, minimalny odstęp `A3144_MIN_INTERVAL_US` (ochrona przed podwójnym zliczeniem).
+- Jeśli brak impulsów: obróć magnes o 180° lub zmień `A3144_COUNT_ON_FALLING` na `0` (zbocze RISING) w `src/config.h`.
 
-### Czujnik obrotów A3144 (cyfrowy Hall)
+## Gauss – zerowanie przy starcie
 
-| A3144 | RP2040 |
-| --- | --- |
-| VCC | 3.3V |
-| GND | GND |
-| OUT | GP9 |
+Przy `setup()` wywoływane jest `gaussCalibrateZero()` (średnia z 64 próbek ADC bez magnesu). Nie trzymaj magnesu przy włączaniu.
 
-> **Uwaga:** A3144 działa jako cyfrowy przełącznik Halla. Zamontuj jeden magnes na obracającym się elemencie: jedno zbocze opadające na `OUT` = jeden obrót. Wejście GP9 używa `INPUT_PULLUP`, więc wyjście czujnika jest traktowane jako aktywne w stanie LOW.
+## Konfiguracja w `src/config.h`
 
-### TMC2208 (Step/Dir)
-
-| TMC2208 | RP2040 |
-| --- | --- |
-| STEP | GP2 |
-| DIR | GP3 |
-| EN | GP10 |
-| VIO | 3.3V |
-| GND | GND |
-| UART RX | GP5 (opcjonalnie) |
-| UART TX | GP4 (opcjonalnie) |
-
-### Czujnik Halla AH49HZ3 (pomiar Gauss)
-
-| AH49HZ3 | RP2040 |
-| --- | --- |
-| VCC | 3.3V |
-| GND | GND |
-| VOUT | GP26 / ADC0 |
-
-> **Uwaga:** pomiar aktywuje się automatycznie po wykryciu pola >= 50 G i wraca do menu po spadku poniżej 50 G.
-
-> **Uwaga:** RP2040 używa logiki 3.3V. Jeśli sterownik lub enkoder wymaga 5V, użyj konwertera poziomów.
-
-## Uwagi do implementacji
-
-- Presety zapisujemy w EEPROM, limit 32 wpisów.
-- Kod startuje w **Manual mode**.
-- Menu jest na enkoderze: obrót = zmiana wartości/pozycji, klik = akceptacja.
-- Soft start/stop: rampa prędkości przy starcie i hamowaniu w czasie pauzy/zakończenia (można wyłączyć `USE_SOFT_START` w `src/config.h`).
-- Zakresy: 1–99999 zwojów oraz 1–1500 RPM (limit `MAX_RPM_USER`).
-- Silnik testowy: **17HS4401** (1.8° = 200 kroków/obrót). `MICROSTEP` i `STEPS_PER_REV = 200 * MICROSTEP`.
-- Domyślnie **pełny krok (1/1)** (`MICROSTEP = 1`, MS1=LOW, MS2=LOW, MS3=LOW).
-- Sterownik domyślnie **TMC2208** Step/Dir. UART: `USE_TMC2208_UART = 1` w `config.h`.
-- Zliczanie obrotów: A3144 na GP9, `A3144_PULSES_PER_REV = 1`, `A3144_DEBOUNCE_US = 3000`; kierunek z `DIR` silnika.
+| Stała | Domyślnie | Opis |
+| --- | --- | --- |
+| `USE_TMC_UART` | 1 | Konfiguracja sterownika przez UART (zalecane) |
+| `USE_TMC2209` | 0 | 1 jeśli masz TMC2209 jak w starym projekcie |
+| `MICROSTEP` | 8 | Musi zgadzać się z MS1/MS2/MS3 (stary projekt: 1/8) |
+| `MAX_RPM_USER` | 1500 | Limit RPM w UI |
+| `DIR_CW_LEVEL` | HIGH | Jak w starym projekcie; odwróć jeśli kręci w złą stronę |
 
 ## Kompilacja
 
@@ -107,5 +45,3 @@
 pio run -e pico
 pio run -e pico -t upload
 ```
-
-Konfiguracja pinów i stałych: `src/config.h`.

@@ -14,6 +14,13 @@ Firmware for a guitar pickup coil winder on **Raspberry Pi Pico (RP2040)**.
 - [Hardware and wiring (PL)](docs/HARDWARE.md)
 - Pin map and build-time options: `src/config.h`
 
+## Merge (nowy + stary projekt)
+
+- UI, Gauss (auto-zero przy starcie), A3144, prewind — z nowszego firmware.
+- Napęd silnika — ze **starego** (`analogWrite` STEP + UART TMC + rampa), bo w nowym PWM na GP2 nie wchodził na obroty.
+
+Szczegóły kalibracji: [docs/HARDWARE.md](docs/HARDWARE.md). Wszystkie przełączniki: `src/config.h`.
+
 ## Build
 
 Requires [PlatformIO](https://platformio.org/):
