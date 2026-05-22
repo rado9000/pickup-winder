@@ -511,15 +511,18 @@ static void startWindingNow() {
 }
 
 void setup() {
+  pinMode(ENC_A_PIN, INPUT_PULLUP);
+  pinMode(ENC_B_PIN, INPUT_PULLUP);
+  pinMode(ENC_BTN_PIN, INPUT_PULLUP);
+
+  gaussBegin();
+  (void)gaussBootSetup();
+
   Wire.setSDA(I2C_SDA_PIN);
   Wire.setSCL(I2C_SCL_PIN);
   Wire.begin();
   Wire.setClock(100000);
   Wire.setTimeout(10);
-
-  pinMode(ENC_A_PIN, INPUT_PULLUP);
-  pinMode(ENC_B_PIN, INPUT_PULLUP);
-  pinMode(ENC_BTN_PIN, INPUT_PULLUP);
 
   lcd.init();
   lcd.backlight();
@@ -527,16 +530,13 @@ void setup() {
   lcd.setCursor(0, 0);
   printPadded("Pickup winder");
   lcd.setCursor(0, 1);
-  printPadded("Zeroing sensors...");
+  printPadded("Manual mode");
 
   presetsBegin();
   presetsLoad();
-  gaussBegin();
   a3144Begin();
   motorDriverBegin();
   motorEnable(false);
-
-  (void)gaussBootSetup();
 
   targetTurns = 1000;
   targetRpm = 300;

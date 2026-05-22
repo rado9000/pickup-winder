@@ -2,46 +2,73 @@
 #include "config.h"
 
 static float gaussValue_ = 0.0f;
-static float gaussBaselineG_ = 0.0f;
+static int32_t gaussBaselineAdc_ = 0;
 static int gaussReturnMode_ = 0;
 static uint32_t gaussEnterSinceMs_ = 0;
 static uint32_t gaussExitSinceMs_ = 0;
+static bool gaussReady_ = false;
+static uint32_t gaussBootDoneMs_ = 0;
 
 static bool isMenuScreen(int mode) {
   return mode >= 0 && mode <= 5;
 }
 
-static float readGaussRaw() {
-  int raw = analogRead(HALL_ADC_PIN);
-  float voltage = ((float)raw / (float)HALL_ADC_MAX) * HALL_ADC_REF_V;
-  float deltaMv = (voltage - HALL_ZERO_V) * 1000.0f;
+// G = (różnica ADC) przeliczona na mV, potem / mV/G
+static float gaussFromAdcDelta(int32_t deltaAdc) {
+  float deltaMv =
+      ((float)deltaAdc * HALL_ADC_REF_V / (float)HALL_ADC_MAX) * 1000.0f;
   return deltaMv / HALL_MV_PER_GAUSS;
 }
 
+static int readAdcFiltered() {
+  (void)analogRead(HALL_ADC_PIN);
+  delayMicroseconds(200);
+  int a = analogRead(HALL_ADC_PIN);
+  delayMicroseconds(200);
+  int b = analogRead(HALL_ADC_PIN);
+  return (a + b) / 2;
+}
+
 static void refreshGaussValue() {
-  gaussValue_ = readGaussRaw() - gaussBaselineG_;
+  int raw = readAdcFiltered();
+  gaussValue_ = gaussFromAdcDelta((int32_t)raw - gaussBaselineAdc_);
 }
 
 void gaussBegin() {
 #if USE_GAUSS_MONITOR
   pinMode(HALL_ADC_PIN, INPUT);
   analogReadResolution(12);
-  gaussBaselineG_ = 0.0f;
+  gaussBaselineAdc_ = 0;
   gaussValue_ = 0.0f;
+  gaussReady_ = false;
   gaussEnterSinceMs_ = 0;
   gaussExitSinceMs_ = 0;
+  gaussBootDoneMs_ = 0;
 #endif
 }
 
 void gaussCalibrateZero() {
 #if USE_GAUSS_MONITOR
-  float sum = 0.0f;
-  for (int i = 0; i < GAUSS_CALIB_SAMPLES; i++) {
-    sum += readGaussRaw();
+  for (int i = 0; i < 8; i++) {
+    (void)analogRead(HALL_ADC_PIN);
     delay(5);
   }
-  gaussBaselineG_ = sum / (float)GAUSS_CALIB_SAMPLES;
-  gaussValue_ = 0.0f;
+
+  int64_t sumAdc = 0;
+  for (int i = 0; i < GAUSS_CALIB_SAMPLES; i++) {
+    sumAdc += readAdcFiltered();
+    delay(10);
+  }
+  gaussBaselineAdc_ = (int32_t)(sumAdc / GAUSS_CALIB_SAMPLES);
+
+  refreshGaussValue();
+  if (fabsf(gaussValue_) > 2.0f) {
+    float corrCounts = (gaussValue_ * HALL_MV_PER_GAUSS) /
+                       (1000.0f * HALL_ADC_REF_V / (float)HALL_ADC_MAX);
+    gaussBaselineAdc_ += (int32_t)lroundf(corrCounts);
+    gaussValue_ = 0.0f;
+  }
+
   gaussEnterSinceMs_ = 0;
   gaussExitSinceMs_ = 0;
 #endif
@@ -52,6 +79,9 @@ bool gaussBootSetup() {
   return true;
 #else
   gaussCalibrateZero();
+  gaussReady_ = true;
+  gaussBootDoneMs_ = millis() + 400;
+  gaussValue_ = 0.0f;
   return true;
 #endif
 }
@@ -71,8 +101,17 @@ void gaussUpdate(uint32_t nowMs, int screenMode, int &ioScreenMode) {
   (void)ioScreenMode;
   return;
 #else
+  if (!gaussReady_) {
+    return;
+  }
+
   refreshGaussValue();
   float absGauss = fabsf(gaussValue_);
+
+  if (nowMs < gaussBootDoneMs_) {
+    gaussEnterSinceMs_ = 0;
+    return;
+  }
 
   if (ioScreenMode != 90 && isMenuScreen(screenMode)) {
     if (absGauss >= GAUSS_ENTER_THRESHOLD) {
