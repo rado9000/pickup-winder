@@ -198,7 +198,8 @@ volatile long currentSteps = 0;
 int currentRpm = 0;
 const unsigned long WINDING_UI_INTERVAL_MS = 200;
 const int ENCODER_DETENTS_PER_REV = 20;
-const uint16_t PREWIND_STEP_DELAY_US = 400;
+const uint16_t PREWIND_STEP_INTERVAL_US = 800;
+const uint16_t PREWIND_STEP_PULSE_US = 6;
 
 // Soft stop flow
 #define USE_SOFT_STOP 0
@@ -236,6 +237,8 @@ uint32_t lastStepUpdateUs = 0;
 float turnsAccum = 0.0f;
 uint32_t lastTurnUpdateMs = 0;
 float prewindStepCarry = 0.0f;
+long prewindStepsQueued = 0;
+uint32_t prewindLastStepUs = 0;
 
 void loadPresets() {
   writeHeaderIfNeeded();
@@ -619,18 +622,11 @@ void disableStepOutput() {
 #endif
 }
 
-void stepMotorSteps(long steps, bool cw) {
-  if (steps <= 0) {
-    return;
-  }
-  disableStepOutput();
+void stepMotorSingle(bool cw) {
   setDirection(cw);
-  for (long i = 0; i < steps; i++) {
-    digitalWrite(STEP_PIN, HIGH);
-    delayMicroseconds(PREWIND_STEP_DELAY_US);
-    digitalWrite(STEP_PIN, LOW);
-    delayMicroseconds(PREWIND_STEP_DELAY_US);
-  }
+  digitalWrite(STEP_PIN, HIGH);
+  delayMicroseconds(PREWIND_STEP_PULSE_US);
+  digitalWrite(STEP_PIN, LOW);
 }
 
 uint16_t computeRampDurationMs(int targetRpmValue) {
@@ -744,12 +740,14 @@ void setStepFrequency(float stepHz) {
 #endif
 }
 
-void startStepTimer(int rpm) {
+void startStepTimer(int rpm, bool preserveTurns) {
   float stepHz = rpmToStepHz(rpm);
   commandedStepHz = stepHz;
   stepAccumulator = currentSteps;
   lastStepUpdateUs = micros();
-  turnsAccum = 0.0f;
+  if (!preserveTurns) {
+    turnsAccum = 0.0f;
+  }
   lastTurnUpdateMs = millis();
   setStepFrequency(stepHz);
 }
@@ -1026,6 +1024,8 @@ void loop() {
         stepAccumulator = 0.0f;
         turnsAccum = 0.0f;
         prewindStepCarry = 0.0f;
+        prewindStepsQueued = 0;
+        prewindLastStepUs = micros();
         lastTurnUpdateMs = millis();
         currentRpm = 0;
         windingPaused = false;
@@ -1159,6 +1159,8 @@ void loop() {
       stepAccumulator = 0.0f;
       turnsAccum = 0.0f;
       prewindStepCarry = 0.0f;
+      prewindStepsQueued = 0;
+      prewindLastStepUs = micros();
       lastTurnUpdateMs = millis();
       currentRpm = 0;
       windingPaused = false;
@@ -1182,6 +1184,9 @@ void loop() {
   } else if (screenMode == SCREEN_PREWIND) {
     blinkDirty = false;
     if (buttonEvent == BTN_CLICK) {
+      prewindStepsQueued = 0;
+      prewindStepCarry = 0.0f;
+      disableStepOutput();
       screenMode = SCREEN_COUNTDOWN;
       countdownValue = 3;
       countdownTickMs = millis();
@@ -1189,6 +1194,8 @@ void loop() {
       return;
     }
     if (buttonEvent == BTN_LONG) {
+      prewindStepsQueued = 0;
+      prewindStepCarry = 0.0f;
       screenMode = SCREEN_MANUAL;
       manualField = 0;
       manualDigitIndex = 0;
@@ -1204,12 +1211,20 @@ void loop() {
       long stepsToMove = (long)prewindStepCarry;
       if (stepsToMove != 0) {
         prewindStepCarry -= (float)stepsToMove;
-        bool stepCw = stepsToMove > 0 ? targetDirectionCW : !targetDirectionCW;
-        long absSteps = labs(stepsToMove);
-        stepMotorSteps(absSteps, stepCw);
-        stepAccumulator += (float)stepsToMove;
+        prewindStepsQueued += stepsToMove;
+      }
+    }
+    if (prewindStepsQueued != 0) {
+      uint32_t nowUs = micros();
+      if (nowUs - prewindLastStepUs >= PREWIND_STEP_INTERVAL_US) {
+        prewindLastStepUs = nowUs;
+        bool stepCw = prewindStepsQueued > 0 ? targetDirectionCW : !targetDirectionCW;
+        stepMotorSingle(stepCw);
+        prewindStepsQueued += (prewindStepsQueued > 0) ? -1 : 1;
+        stepAccumulator += (stepCw == targetDirectionCW) ? 1.0f : -1.0f;
         if (stepAccumulator < 0.0f) {
           stepAccumulator = 0.0f;
+          prewindStepsQueued = 0;
           prewindStepCarry = 0.0f;
         }
         currentSteps = (long)stepAccumulator;
@@ -1218,8 +1233,8 @@ void loop() {
           turnsAccum = 0.0f;
         }
       }
-      drawPrewindProgressLine();
-    } else if (nowMs - windingUpdateMs >= WINDING_UI_INTERVAL_MS) {
+    }
+    if (nowMs - windingUpdateMs >= WINDING_UI_INTERVAL_MS) {
       windingUpdateMs = nowMs;
       drawPrewindProgressLine();
     }
@@ -1232,7 +1247,7 @@ void loop() {
       lcd.clear();
       commandedRpm = MIN_RPM;
       currentRpm = commandedRpm;
-      startStepTimer(commandedRpm);
+      startStepTimer(commandedRpm, true);
       beginRampToTarget(targetRpm, commandedRpm);
       windingUpdateMs = nowMs;
       drawWindingScreen();
@@ -1248,7 +1263,7 @@ void loop() {
         lcd.clear();
         commandedRpm = MIN_RPM;
         currentRpm = commandedRpm;
-        startStepTimer(commandedRpm);
+        startStepTimer(commandedRpm, true);
         beginRampToTarget(targetRpm, commandedRpm);
         windingUpdateMs = nowMs;
         drawWindingScreen();
