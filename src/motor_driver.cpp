@@ -8,9 +8,10 @@ static uint32_t lastStepUpdateUs_ = 0;
 
 static bool rampActive_ = false;
 static uint32_t rampStartMs_ = 0;
+static uint32_t lastRampUpdateMs_ = 0;
 static uint16_t rampDurationMs_ = 0;
-static int rampStartRpm_ = 0;
-static int rampTargetRpm_ = 0;
+static float rampStartHz_ = 0.0f;
+static float rampTargetHz_ = 0.0f;
 static int commandedRpm_ = 0;
 
 static bool stopRequested_ = false;
@@ -25,8 +26,22 @@ static float rpmToStepHz(int rpm) {
   return (rpm / 60.0f) * (float)STEPS_PER_REV;
 }
 
-static uint16_t computeRampDurationMs(int targetRpmValue) {
-  long ms = (long)RAMP_BASE_MS + (long)targetRpmValue * (long)RAMP_MS_PER_RPM;
+static int hzToRpm(float hz) {
+  if (hz <= 0.0f) {
+    return 0;
+  }
+  return (int)lroundf((hz * 60.0f) / (float)STEPS_PER_REV);
+}
+
+static uint16_t computeRampDurationMs(int fromRpm, int toRpm) {
+  int delta = fromRpm - toRpm;
+  if (delta < 0) {
+    delta = -delta;
+  }
+  if (delta < 1) {
+    delta = 1;
+  }
+  long ms = (long)RAMP_BASE_MS + (long)delta * (long)RAMP_MS_PER_RPM;
   if (ms < RAMP_MIN_MS) {
     ms = RAMP_MIN_MS;
   }
@@ -36,78 +51,63 @@ static uint16_t computeRampDurationMs(int targetRpmValue) {
   return (uint16_t)ms;
 }
 
-static float smoothstep(float t) {
+// Perlin smootherstep: zerowe przyspieszenie na początku i końcu rampy
+static float rampEase(float t) {
   if (t <= 0.0f) {
     return 0.0f;
   }
   if (t >= 1.0f) {
     return 1.0f;
   }
-  return t * t * (3.0f - 2.0f * t);
+  return t * t * t * (t * (t * 6.0f - 15.0f) + 10.0f);
 }
 
 static void setStepFrequency(float stepHz) {
   commandedStepHz_ = stepHz;
-  if (stepHz <= 0.0f) {
+  if (stepHz < RAMP_MIN_STEP_HZ) {
     analogWrite(STEP_PIN, 0);
+    commandedStepHz_ = 0.0f;
     return;
   }
-  uint32_t freq = (uint32_t)lroundf(stepHz);
-  if (freq < 1) {
-    freq = 1;
-  }
-  analogWriteFreq(freq);
+  analogWriteFreq(stepHz);
   analogWrite(STEP_PIN, 128);
 }
 
-static void beginRampToTarget(int targetRpmValue, int startRpm) {
-  if (!USE_SOFT_START) {
-    rampActive_ = false;
-    commandedRpm_ = targetRpmValue;
-    setStepFrequency(rpmToStepHz(targetRpmValue));
-    return;
-  }
+static void beginRampToTargetHz(float targetHz, float startHz) {
   rampActive_ = true;
   rampStartMs_ = millis();
-  rampDurationMs_ = computeRampDurationMs(targetRpmValue);
-  rampStartRpm_ = startRpm;
-  rampTargetRpm_ = targetRpmValue;
+  lastRampUpdateMs_ = rampStartMs_;
+  rampStartHz_ = startHz;
+  rampTargetHz_ = targetHz;
+  rampDurationMs_ = computeRampDurationMs(hzToRpm(startHz), hzToRpm(targetHz));
 }
 
 static void updateRamp(uint32_t nowMs) {
   if (!rampActive_) {
     return;
   }
+  if (nowMs - lastRampUpdateMs_ < RAMP_UPDATE_MS) {
+    return;
+  }
+  lastRampUpdateMs_ = nowMs;
+
   uint32_t elapsed = nowMs - rampStartMs_;
-  float t = (rampDurationMs_ == 0) ? 1.0f : (elapsed / (float)rampDurationMs_);
-  float eased = smoothstep(t);
-  float rpmF = rampStartRpm_ + (rampTargetRpm_ - rampStartRpm_) * eased;
-  int rpm = (int)lroundf(rpmF);
-  if (rampTargetRpm_ == 0) {
-    if (rpm < 0) {
-      rpm = 0;
-    }
-  } else {
-    if (rpm < MIN_RPM) {
-      rpm = MIN_RPM;
-    }
-    if (rpm > rampTargetRpm_) {
-      rpm = rampTargetRpm_;
-    }
-  }
-  if (rpm != commandedRpm_) {
-    commandedRpm_ = rpm;
-    setStepFrequency(rpmToStepHz(commandedRpm_));
-  }
+  float t = (rampDurationMs_ == 0) ? 1.0f : ((float)elapsed / (float)rampDurationMs_);
+  float eased = rampEase(t);
+  float hz = rampStartHz_ + (rampTargetHz_ - rampStartHz_) * eased;
+
+  setStepFrequency(hz);
+  commandedRpm_ = hzToRpm(commandedStepHz_);
+
   if (elapsed >= rampDurationMs_) {
     rampActive_ = false;
-    commandedRpm_ = rampTargetRpm_;
-    setStepFrequency(rpmToStepHz(commandedRpm_));
+    setStepFrequency(rampTargetHz_);
+    commandedRpm_ = hzToRpm(commandedStepHz_);
   }
 }
 
 static void updateStepCounting() {
-  if (commandedStepHz_ <= 0.0f) {
+  if (commandedStepHz_ < RAMP_MIN_STEP_HZ) {
     lastStepUpdateUs_ = micros();
     return;
   }
@@ -139,17 +139,24 @@ bool motorDirectionCW() {
 }
 
 void motorStartWinding(int startRpm, int targetRpm, bool preserveSteps) {
+  (void)startRpm;
   if (!preserveSteps) {
     stepAccumulator_ = 0.0f;
   }
   lastStepUpdateUs_ = micros();
-  commandedRpm_ = startRpm;
-  setStepFrequency(rpmToStepHz(startRpm));
-  beginRampToTarget(targetRpm, startRpm);
   stopRequested_ = false;
   stopForCompletion_ = false;
   pauseRequested_ = false;
   menuRequested_ = false;
+#if USE_SOFT_START
+  commandedRpm_ = 0;
+  setStepFrequency(0.0f);
+  beginRampToTargetHz(rpmToStepHz(targetRpm), 0.0f);
+#else
+  commandedRpm_ = targetRpm;
+  setStepFrequency(rpmToStepHz(targetRpm));
+  rampActive_ = false;
+#endif
 }
 
 void motorRequestStop(bool forCompletion, bool pause, bool toMenu) {
@@ -159,7 +166,7 @@ void motorRequestStop(bool forCompletion, bool pause, bool toMenu) {
     stopForCompletion_ = forCompletion;
     pauseRequested_ = pause;
     menuRequested_ = toMenu;
-    beginRampToTarget(0, commandedRpm_);
+    beginRampToTargetHz(0.0f, commandedStepHz_);
   }
 #else
   (void)forCompletion;

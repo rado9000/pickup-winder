@@ -27,6 +27,13 @@ Ten branch łączy:
 - Wyższe RPM w menu: ustaw `MAX_RPM_A3144` (domyślnie **2000**).
 - Jeśli brak impulsów: obróć magnes o 180° lub `A3144_COUNT_ON_FALLING` → `0` (RISING).
 
+## Soft start / stop
+
+- Rampa w **częstotliwości kroków (Hz)**, aktualizacja co **5 ms** — bez skoków co 1 RPM.
+- Krzywa **smootherstep** (płynne przyspieszenie i hamowanie na początku i końcu).
+- Start od **0 Hz** do docelowego RPM (domyślnie 4–10 s zależnie od ΔRPM).
+- Stałe w `config.h`: `RAMP_MIN_MS`, `RAMP_MAX_MS`, `RAMP_MS_PER_RPM`.
+
 ## Gauss – zerowanie przy starcie
 
 Przy `setup()` wywoływane jest `gaussCalibrateZero()` (średnia z 64 próbek ADC bez magnesu). Nie trzymaj magnesu przy włączaniu.

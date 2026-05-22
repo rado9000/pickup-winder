@@ -37,10 +37,13 @@
 
 #define USE_SOFT_START 1
 #define USE_SOFT_STOP 1
-#define RAMP_MIN_MS 2500
-#define RAMP_MAX_MS 6000
-#define RAMP_BASE_MS 1500
-#define RAMP_MS_PER_RPM 2
+// Płynna rampa: aktualizacja co 5 ms, interpolacja w Hz (nie skokowe RPM)
+#define RAMP_UPDATE_MS 5
+#define RAMP_MIN_STEP_HZ 0.5f
+#define RAMP_MIN_MS 4000
+#define RAMP_MAX_MS 10000
+#define RAMP_BASE_MS 2000
+#define RAMP_MS_PER_RPM 3
 
 // --- A3144: magnes diametryczny na osi (jedno zbocze S→N na obrót) ---
 #define A3144_PULSES_PER_REV 1
