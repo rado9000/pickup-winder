@@ -537,9 +537,8 @@ void setup() {
   motorEnable(false);
 
   lcd.setCursor(0, 1);
-  printPadded("Remove magnet...");
-  delay(600);
-  gaussCalibrateZero();
+  printPadded("Zeroing Gauss...");
+  (void)gaussBootSetup();
 
   targetTurns = 1000;
   targetRpm = 300;
