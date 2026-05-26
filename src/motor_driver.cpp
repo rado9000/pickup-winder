@@ -1,6 +1,8 @@
 #include "motor_driver.h"
 #include "config.h"
 
+#include <hardware/timer.h>
+
 static bool directionCW_ = true;
 static float commandedStepHz_ = 0.0f;
 static float stepAccumulator_ = 0.0f;
@@ -18,6 +20,56 @@ static bool stopRequested_ = false;
 static bool stopForCompletion_ = false;
 static bool pauseRequested_ = false;
 static bool menuRequested_ = false;
+
+static struct repeating_timer stepTimer_;
+static volatile bool stepTimerActive_ = false;
+static uint32_t stepTimerPeriodUs_ = 0;
+
+static int64_t stepPulseLowAlarm(alarm_id_t id, void *user_data) {
+  (void)id;
+  (void)user_data;
+  digitalWrite(STEP_PIN, LOW);
+  return 0;
+}
+
+static bool stepTimerHandler(struct repeating_timer *rt) {
+  (void)rt;
+  digitalWrite(STEP_PIN, HIGH);
+  add_alarm_in_us(STEP_PULSE_WIDTH_US, stepPulseLowAlarm, nullptr, true);
+  return true;
+}
+
+static void stopStepTimer() {
+  if (stepTimerActive_) {
+    cancel_repeating_timer(&stepTimer_);
+    stepTimerActive_ = false;
+    stepTimerPeriodUs_ = 0;
+  }
+}
+
+static void stopPwmSteps() {
+  analogWrite(STEP_PIN, 0);
+}
+
+static void stopStepOutput() {
+  stopStepTimer();
+  stopPwmSteps();
+  commandedStepHz_ = 0.0f;
+}
+
+static void startStepTimer(uint32_t periodUs) {
+  if (periodUs < STEP_TIMER_MIN_PERIOD_US) {
+    periodUs = STEP_TIMER_MIN_PERIOD_US;
+  }
+  if (stepTimerActive_ && periodUs == stepTimerPeriodUs_) {
+    return;
+  }
+  stopStepTimer();
+  stepTimerPeriodUs_ = periodUs;
+  if (add_repeating_timer_us(-(int64_t)periodUs, stepTimerHandler, nullptr, &stepTimer_)) {
+    stepTimerActive_ = true;
+  }
+}
 
 static float rpmToStepHz(int rpm) {
   if (rpm <= 0) {
@@ -51,7 +103,6 @@ static uint16_t computeRampDurationMs(int fromRpm, int toRpm) {
   return (uint16_t)ms;
 }
 
-// smoothstep: lagodnie, ale bez wielosekundowego „pełzania” jak smootherstep
 static float rampEase(float t) {
   if (t <= 0.0f) {
     return 0.0f;
@@ -63,6 +114,10 @@ static float rampEase(float t) {
 }
 
 static int effectiveRampStartRpm(int targetRpm) {
+#if RAMP_FROM_MIN_RPM
+  (void)targetRpm;
+  return MIN_RPM;
+#else
   int fromPct = (targetRpm * RAMP_START_PERCENT) / 100;
   if (fromPct < MIN_RPM) {
     fromPct = MIN_RPM;
@@ -71,21 +126,37 @@ static int effectiveRampStartRpm(int targetRpm) {
     fromPct = targetRpm;
   }
   return fromPct;
+#endif
 }
 
 static void setStepFrequency(float stepHz) {
   commandedStepHz_ = stepHz;
   if (stepHz <= 0.0f) {
-    analogWrite(STEP_PIN, 0);
-    commandedStepHz_ = 0.0f;
+    stopStepOutput();
     return;
   }
+
   uint32_t freq = (uint32_t)lroundf(stepHz);
   if (freq < 1) {
     freq = 1;
   }
+
+  uint32_t periodUs = (uint32_t)lroundf(1000000.0f / stepHz);
+  if (periodUs < STEP_TIMER_MIN_PERIOD_US) {
+    periodUs = STEP_TIMER_MIN_PERIOD_US;
+  }
+
+#if USE_TIMER_STEP_ABOVE_HZ > 0
+  if (freq >= (uint32_t)USE_TIMER_STEP_ABOVE_HZ) {
+    stopPwmSteps();
+    startStepTimer(periodUs);
+    return;
+  }
+#endif
+
+  stopStepTimer();
   analogWriteFreq(freq);
-  analogWrite(STEP_PIN, 128);
+  analogWrite(STEP_PIN, STEP_PWM_DUTY);
 }
 
 static void beginRampToTargetHz(float targetHz, float startHz) {
@@ -136,7 +207,8 @@ void motorDriverBegin() {
   pinMode(STEP_PIN, OUTPUT);
   pinMode(DIR_PIN, OUTPUT);
   pinMode(EN_PIN, OUTPUT);
-  analogWrite(STEP_PIN, 0);
+  digitalWrite(STEP_PIN, LOW);
+  stopStepOutput();
   motorEnable(false);
 }
 
@@ -217,8 +289,7 @@ void motorUpdate(uint32_t nowMs) {
 }
 
 void motorStopImmediate() {
-  analogWrite(STEP_PIN, 0);
-  commandedStepHz_ = 0.0f;
+  stopStepOutput();
   rampActive_ = false;
   stopRequested_ = false;
   stopForCompletion_ = false;
@@ -251,7 +322,7 @@ float motorCommandedStepHz() {
 void motorSingleStep(bool cw) {
   motorSetDirection(cw);
   digitalWrite(STEP_PIN, HIGH);
-  delayMicroseconds(PREWIND_STEP_PULSE_US);
+  delayMicroseconds(STEP_PULSE_WIDTH_US);
   digitalWrite(STEP_PIN, LOW);
 }
 

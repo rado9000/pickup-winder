@@ -34,13 +34,20 @@
 #define USE_SOFT_START 1
 #define USE_SOFT_STOP 0
 
-#define RAMP_UPDATE_MS 5
-#define RAMP_MIN_MS 500
-#define RAMP_MAX_MS 2500
-#define RAMP_BASE_MS 400
-#define RAMP_MS_PER_RPM 1
-// Start rampy: min. ten % docelowego RPM (nie od 1 RPM — wtedy silnik „pełznie”)
-#define RAMP_START_PERCENT 50
+#define RAMP_UPDATE_MS 10
+#define RAMP_MIN_MS 3000
+#define RAMP_MAX_MS 12000
+#define RAMP_BASE_MS 2000
+#define RAMP_MS_PER_RPM 4
+// 1 = rampa od MIN_RPM do celu (wyraźna); 0 = start od RAMP_START_PERCENT
+#define RAMP_FROM_MIN_RPM 1
+#define RAMP_START_PERCENT 15
+
+// PWM STEP do ~12 kHz; powyzej timer (krotki impuls) — stabilne 1000+ RPM przy 1/8
+#define USE_TIMER_STEP_ABOVE_HZ 12000
+#define STEP_TIMER_MIN_PERIOD_US 18
+#define STEP_PULSE_WIDTH_US 4
+#define STEP_PWM_DUTY 64
 
 #define A3144_PULSES_PER_REV 1
 #define A3144_COUNT_ON_FALLING 1
@@ -71,4 +78,4 @@
 #define WINDING_UI_INTERVAL_MS 200
 #define ENCODER_DETENTS_PER_REV 20
 #define PREWIND_STEP_INTERVAL_US 800
-#define PREWIND_STEP_PULSE_US 6
+#define PREWIND_STEP_PULSE_US STEP_PULSE_WIDTH_US
