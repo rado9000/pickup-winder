@@ -27,12 +27,24 @@ Ten branch łączy:
 - Wyższe RPM w menu: ustaw `MAX_RPM_A3144` (domyślnie **2000**).
 - Jeśli brak impulsów: obróć magnes o 180° lub `A3144_COUNT_ON_FALLING` → `0` (RISING).
 
+## TMC2208 – microstep (MS1 / MS2)
+
+Na Twoim module **MS3 nie jest obsługiwany** (zostaw LOW). Ustaw `MICROSTEP` w `config.h` tak jak poniżej:
+
+| MS1 | MS2 | Microstep | `MICROSTEP` |
+| --- | --- | --- | --- |
+| LOW | LOW | 1/8 | **8** (domyślnie w firmware) |
+| LOW | HIGH | 1/4 | 4 |
+| HIGH | LOW | 1/2 | 2 |
+| HIGH | HIGH | 1/16 | 16 |
+
+Jeśli `MICROSTEP` nie zgadza się z pinami MS, RPM na LCD będzie mylące (np. przy 1/8 a `MICROSTEP=1` silnik jedzie ~8× wolniej).
+
 ## Soft start / stop
 
-- Rampa w **częstotliwości kroków (Hz)**, aktualizacja co **5 ms** — bez skoków co 1 RPM.
-- Krzywa **smootherstep** (płynne przyspieszenie i hamowanie na początku i końcu).
-- Start od **0 Hz** do docelowego RPM (domyślnie 4–10 s zależnie od ΔRPM).
-- Stałe w `config.h`: `RAMP_MIN_MS`, `RAMP_MAX_MS`, `RAMP_MS_PER_RPM`.
+- Rampa w **częstotliwości kroków (Hz)**, aktualizacja co **5 ms**.
+- Krzywa **smoothstep**; start od **50%** docelowego RPM (`RAMP_START_PERCENT`).
+- Stałe: `RAMP_MIN_MS`, `RAMP_MAX_MS`, `RAMP_MS_PER_RPM`, `USE_SOFT_START`.
 
 ## Gauss – zerowanie przy starcie
 
@@ -42,7 +54,7 @@ Przy `setup()` wywoływane jest `gaussCalibrateZero()` (średnia z 64 próbek AD
 
 | Stała | Domyślnie | Opis |
 | --- | --- | --- |
-| `MICROSTEP` | 1 | Zgodne z MS1/MS2/MS3 na TMC2208 (domyślnie pełny krok) |
+| `MICROSTEP` | 8 | MS1=LOW, MS2=LOW → 1/8 kroku (patrz tabela wyżej) |
 | `MAX_RPM_A3144` | 2000 | Max RPM dla zliczania A3144 i UI |
 | `DIR_CW_LEVEL` | HIGH | Jak w starym projekcie; odwróć jeśli kręci w złą stronę |
 

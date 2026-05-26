@@ -15,7 +15,14 @@
 #define LCD_COLS 20
 #define LCD_ROWS 4
 
-#define MICROSTEP 1
+// Kroki na obrót silnika = 200 * MICROSTEP. Musi zgadzać się z MS1/MS2 na module
+// (MS3 na tym module nie jest używany — zostaw LOW).
+// MS1  MS2  => microstep  => MICROSTEP
+// LOW  LOW  => 1/8        => 8   (obecne okablowanie)
+// LOW  HIGH => 1/4        => 4
+// HIGH LOW  => 1/2        => 2
+// HIGH HIGH => 1/16       => 16
+#define MICROSTEP 8
 #define STEPS_PER_REV (200 * MICROSTEP)
 #define COUNT_STEPS_PER_REV STEPS_PER_REV
 #define DIR_CW_LEVEL HIGH
@@ -24,7 +31,6 @@
 #define MAX_RPM_A3144 2000
 #define MAX_RPM_USER MAX_RPM_A3144
 
-// MS1=MS2=MS3=LOW na TMC2208 => pelny krok; MICROSTEP musi byc 1
 #define USE_SOFT_START 1
 #define USE_SOFT_STOP 0
 
