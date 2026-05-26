@@ -481,7 +481,7 @@ static void enterPrewind() {
   motorEnable(true);
   motorSetDirection(targetDirectionCW);
   a3144SetTargetDirection(targetDirectionCW);
-  analogWrite(STEP_PIN, 0);
+  motorStopImmediate();
   windingUpdateMs = millis();
   drawPrewindScreen();
 }
@@ -489,7 +489,7 @@ static void enterPrewind() {
 static void startCountdownFromPrewind() {
   prewindStepsQueued = 0;
   prewindStepCarry = 0.0f;
-  analogWrite(STEP_PIN, 0);
+  motorStopImmediate();
   screenMode = SCREEN_COUNTDOWN;
   countdownValue = 3;
   countdownTickMs = millis();

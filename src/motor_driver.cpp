@@ -1,6 +1,7 @@
 #include "motor_driver.h"
 #include "config.h"
 
+#include <hardware/gpio.h>
 #include <hardware/timer.h>
 
 static bool directionCW_ = true;
@@ -11,9 +12,10 @@ static uint32_t lastStepUpdateUs_ = 0;
 static bool rampActive_ = false;
 static uint32_t rampStartMs_ = 0;
 static uint32_t lastRampUpdateMs_ = 0;
-static uint16_t rampDurationMs_ = 0;
+static uint32_t rampDurationMs_ = 0;
 static float rampStartHz_ = 0.0f;
 static float rampTargetHz_ = 0.0f;
+static float rampSetpointHz_ = 0.0f;
 static int commandedRpm_ = 0;
 
 static bool stopRequested_ = false;
@@ -21,55 +23,9 @@ static bool stopForCompletion_ = false;
 static bool pauseRequested_ = false;
 static bool menuRequested_ = false;
 
-static struct repeating_timer stepTimer_;
-static volatile bool stepTimerActive_ = false;
-static uint32_t stepTimerPeriodUs_ = 0;
-
-static int64_t stepPulseLowAlarm(alarm_id_t id, void *user_data) {
-  (void)id;
-  (void)user_data;
-  digitalWrite(STEP_PIN, LOW);
-  return 0;
-}
-
-static bool stepTimerHandler(struct repeating_timer *rt) {
-  (void)rt;
-  digitalWrite(STEP_PIN, HIGH);
-  add_alarm_in_us(STEP_PULSE_WIDTH_US, stepPulseLowAlarm, nullptr, true);
-  return true;
-}
-
-static void stopStepTimer() {
-  if (stepTimerActive_) {
-    cancel_repeating_timer(&stepTimer_);
-    stepTimerActive_ = false;
-    stepTimerPeriodUs_ = 0;
-  }
-}
-
-static void stopPwmSteps() {
-  analogWrite(STEP_PIN, 0);
-}
-
-static void stopStepOutput() {
-  stopStepTimer();
-  stopPwmSteps();
-  commandedStepHz_ = 0.0f;
-}
-
-static void startStepTimer(uint32_t periodUs) {
-  if (periodUs < STEP_TIMER_MIN_PERIOD_US) {
-    periodUs = STEP_TIMER_MIN_PERIOD_US;
-  }
-  if (stepTimerActive_ && periodUs == stepTimerPeriodUs_) {
-    return;
-  }
-  stopStepTimer();
-  stepTimerPeriodUs_ = periodUs;
-  if (add_repeating_timer_us(-(int64_t)periodUs, stepTimerHandler, nullptr, &stepTimer_)) {
-    stepTimerActive_ = true;
-  }
-}
+static volatile bool steppingActive_ = false;
+static volatile float velocityHz_ = 0.0f;
+static alarm_id_t nextStepAlarmId_ = 0;
 
 static float rpmToStepHz(int rpm) {
   if (rpm <= 0) {
@@ -85,7 +41,71 @@ static int hzToRpm(float hz) {
   return (int)lroundf((hz * 60.0f) / (float)STEPS_PER_REV);
 }
 
-static uint16_t computeRampDurationMs(int fromRpm, int toRpm) {
+static int64_t stepPulseLowAlarm(alarm_id_t id, void *user_data) {
+  (void)id;
+  (void)user_data;
+  gpio_put(STEP_PIN, 0);
+  return 0;
+}
+
+static void scheduleNextStepAlarm();
+
+static int64_t stepPulseAlarm(alarm_id_t id, void *user_data) {
+  (void)id;
+  (void)user_data;
+  nextStepAlarmId_ = 0;
+
+  if (!steppingActive_) {
+    return 0;
+  }
+
+  float hz = velocityHz_;
+  if (hz < 1.0f) {
+    hz = 1.0f;
+  }
+
+  gpio_put(STEP_PIN, 1);
+  add_alarm_in_us(STEP_PULSE_WIDTH_US, stepPulseLowAlarm, nullptr, true);
+
+  stepAccumulator_ += 1.0f;
+  commandedStepHz_ = hz;
+  commandedRpm_ = hzToRpm(hz);
+
+  scheduleNextStepAlarm();
+  return 0;
+}
+
+static void scheduleNextStepAlarm() {
+  if (!steppingActive_) {
+    return;
+  }
+
+  float hz = velocityHz_;
+  if (hz < 1.0f) {
+    return;
+  }
+
+  uint32_t intervalUs = (uint32_t)lroundf(1000000.0f / hz);
+  if (intervalUs < STEP_MIN_INTERVAL_US) {
+    intervalUs = STEP_MIN_INTERVAL_US;
+  }
+
+  nextStepAlarmId_ = add_alarm_in_us(intervalUs, stepPulseAlarm, nullptr, true);
+}
+
+static void stopStepOutput() {
+  steppingActive_ = false;
+  if (nextStepAlarmId_ > 0) {
+    cancel_alarm(nextStepAlarmId_);
+    nextStepAlarmId_ = 0;
+  }
+  gpio_put(STEP_PIN, 0);
+  commandedStepHz_ = 0.0f;
+  velocityHz_ = 0.0f;
+  rampSetpointHz_ = 0.0f;
+}
+
+static uint32_t computeRampDurationMs(int fromRpm, int toRpm) {
   int delta = fromRpm - toRpm;
   if (delta < 0) {
     delta = -delta;
@@ -100,9 +120,10 @@ static uint16_t computeRampDurationMs(int fromRpm, int toRpm) {
   if (ms > RAMP_MAX_MS) {
     ms = RAMP_MAX_MS;
   }
-  return (uint16_t)ms;
+  return (uint32_t)ms;
 }
 
+// smootherstep — zerowe przyspieszenie na początku i końcu rampy
 static float rampEase(float t) {
   if (t <= 0.0f) {
     return 0.0f;
@@ -110,7 +131,7 @@ static float rampEase(float t) {
   if (t >= 1.0f) {
     return 1.0f;
   }
-  return t * t * (3.0f - 2.0f * t);
+  return t * t * t * (t * (t * 6.0f - 15.0f) + 10.0f);
 }
 
 static int effectiveRampStartRpm(int targetRpm) {
@@ -129,42 +150,50 @@ static int effectiveRampStartRpm(int targetRpm) {
 #endif
 }
 
-static void setStepFrequency(float stepHz) {
+static void updateRampSetpoint(uint32_t nowMs) {
+  if (!rampActive_) {
+    return;
+  }
+
+  uint32_t elapsed = nowMs - rampStartMs_;
+  float t = (rampDurationMs_ == 0) ? 1.0f : ((float)elapsed / (float)rampDurationMs_);
+  float eased = rampEase(t);
+  rampSetpointHz_ = rampStartHz_ + (rampTargetHz_ - rampStartHz_) * eased;
+  velocityHz_ = rampSetpointHz_;
+  commandedStepHz_ = velocityHz_;
+  commandedRpm_ = hzToRpm(velocityHz_);
+
+  if (elapsed >= rampDurationMs_) {
+    rampActive_ = false;
+    rampSetpointHz_ = rampTargetHz_;
+    velocityHz_ = rampTargetHz_;
+    commandedStepHz_ = rampTargetHz_;
+    commandedRpm_ = hzToRpm(rampTargetHz_);
+  }
+}
+
+static void applyStepOutput(float stepHz) {
   commandedStepHz_ = stepHz;
+  rampSetpointHz_ = stepHz;
+
   if (stepHz <= 0.0f) {
     stopStepOutput();
     return;
   }
 
-  uint32_t freq = (uint32_t)lroundf(stepHz);
-  if (freq < 1) {
-    freq = 1;
+  if (!steppingActive_) {
+    steppingActive_ = true;
+    velocityHz_ = stepHz;
+    scheduleNextStepAlarm();
   }
-
-  uint32_t periodUs = (uint32_t)lroundf(1000000.0f / stepHz);
-  if (periodUs < STEP_TIMER_MIN_PERIOD_US) {
-    periodUs = STEP_TIMER_MIN_PERIOD_US;
-  }
-
-#if USE_TIMER_STEP_ABOVE_HZ > 0
-  if (freq >= (uint32_t)USE_TIMER_STEP_ABOVE_HZ) {
-    stopPwmSteps();
-    startStepTimer(periodUs);
-    return;
-  }
-#endif
-
-  stopStepTimer();
-  analogWriteFreq(freq);
-  analogWrite(STEP_PIN, STEP_PWM_DUTY);
 }
 
 static void beginRampToTargetHz(float targetHz, float startHz) {
   rampActive_ = true;
   rampStartMs_ = millis();
-  lastRampUpdateMs_ = rampStartMs_;
   rampStartHz_ = startHz;
   rampTargetHz_ = targetHz;
+  rampSetpointHz_ = startHz;
   rampDurationMs_ = computeRampDurationMs(hzToRpm(startHz), hzToRpm(targetHz));
 }
 
@@ -172,42 +201,18 @@ static void updateRamp(uint32_t nowMs) {
   if (!rampActive_) {
     return;
   }
-  if (nowMs - lastRampUpdateMs_ < RAMP_UPDATE_MS) {
-    return;
-  }
-  lastRampUpdateMs_ = nowMs;
-
-  uint32_t elapsed = nowMs - rampStartMs_;
-  float t = (rampDurationMs_ == 0) ? 1.0f : ((float)elapsed / (float)rampDurationMs_);
-  float eased = rampEase(t);
-  float hz = rampStartHz_ + (rampTargetHz_ - rampStartHz_) * eased;
-
-  setStepFrequency(hz);
-  commandedRpm_ = hzToRpm(commandedStepHz_);
-
-  if (elapsed >= rampDurationMs_) {
-    rampActive_ = false;
-    setStepFrequency(rampTargetHz_);
-    commandedRpm_ = hzToRpm(commandedStepHz_);
-  }
+  updateRampSetpoint(nowMs);
 }
 
 static void updateStepCounting() {
-  if (commandedStepHz_ <= 0.0f) {
-    lastStepUpdateUs_ = micros();
-    return;
-  }
-  uint32_t nowUs = micros();
-  uint32_t deltaUs = nowUs - lastStepUpdateUs_;
-  lastStepUpdateUs_ = nowUs;
-  stepAccumulator_ += commandedStepHz_ * (deltaUs / 1000000.0f);
+  lastStepUpdateUs_ = micros();
 }
 
 void motorDriverBegin() {
   pinMode(STEP_PIN, OUTPUT);
   pinMode(DIR_PIN, OUTPUT);
   pinMode(EN_PIN, OUTPUT);
-  digitalWrite(STEP_PIN, LOW);
+  gpio_put(STEP_PIN, 0);
   stopStepOutput();
   motorEnable(false);
 }
@@ -254,14 +259,18 @@ void motorStartWinding(int startRpm, int targetRpm, bool preserveSteps) {
   stopForCompletion_ = false;
   pauseRequested_ = false;
   menuRequested_ = false;
+  float targetHz = rpmToStepHz(targetRpm);
 #if USE_SOFT_START
-  commandedRpm_ = startRpm;
   float startHz = rpmToStepHz(startRpm);
-  setStepFrequency(startHz);
-  beginRampToTargetHz(rpmToStepHz(targetRpm), startHz);
+  commandedRpm_ = startRpm;
+  velocityHz_ = startHz;
+  rampSetpointHz_ = startHz;
+  steppingActive_ = true;
+  scheduleNextStepAlarm();
+  beginRampToTargetHz(targetHz, startHz);
 #else
   commandedRpm_ = targetRpm;
-  setStepFrequency(rpmToStepHz(targetRpm));
+  applyStepOutput(targetHz);
   rampActive_ = false;
 #endif
 }
@@ -273,7 +282,7 @@ void motorRequestStop(bool forCompletion, bool pause, bool toMenu) {
     stopForCompletion_ = forCompletion;
     pauseRequested_ = pause;
     menuRequested_ = toMenu;
-    beginRampToTargetHz(0.0f, commandedStepHz_);
+    beginRampToTargetHz(0.0f, velocityHz_);
   }
 #else
   (void)forCompletion;
@@ -321,9 +330,9 @@ float motorCommandedStepHz() {
 
 void motorSingleStep(bool cw) {
   motorSetDirection(cw);
-  digitalWrite(STEP_PIN, HIGH);
+  gpio_put(STEP_PIN, 1);
   delayMicroseconds(STEP_PULSE_WIDTH_US);
-  digitalWrite(STEP_PIN, LOW);
+  gpio_put(STEP_PIN, 0);
 }
 
 void motorResetStepAccumulator() {

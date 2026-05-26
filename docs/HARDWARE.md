@@ -42,15 +42,9 @@ Jeśli `MICROSTEP` nie zgadza się z pinami MS, RPM na LCD będzie mylące (np. 
 
 ## Soft start / stop
 
-- Rampa od **MIN_RPM** do docelowego (`RAMP_FROM_MIN_RPM = 1`), ok. **3–12 s** zależnie od ΔRPM.
-- Krzywa **smoothstep**, aktualizacja co **10 ms**.
-- Stałe: `RAMP_MIN_MS`, `RAMP_MAX_MS`, `RAMP_MS_PER_RPM`, `RAMP_FROM_MIN_RPM`.
-
-## STEP przy wysokim RPM
-
-- Do ~**450 RPM** (przy 1/8): PWM na STEP (`STEP_PWM_DUTY`).
-- Od **~450 RPM** w górę: **timer** + krótki impuls (`STEP_PULSE_WIDTH_US`) — stabilniejsze niż sam PWM przy 1000 RPM.
-- Próg: `USE_TIMER_STEP_ABOVE_HZ` (domyślnie 12000 Hz).
+- Rampa od **MIN_RPM** do celu, ok. **15–60 s** (`RAMP_MS_PER_RPM` = 20).
+- Krzywa **smootherstep** (płynne przyspieszenie bez szarpnięć), setpoint co pętlę `loop()`.
+- Impulsy STEP: **alarmy** + stały czas impulsu (`STEP_PULSE_WIDTH_US`) — bez PWM (mniej wibracji).
 
 ## Gauss – zerowanie przy starcie
 
