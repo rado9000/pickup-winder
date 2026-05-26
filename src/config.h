@@ -24,14 +24,17 @@
 #define MAX_RPM_A3144 2000
 #define MAX_RPM_USER MAX_RPM_A3144
 
+// MS1=MS2=MS3=LOW na TMC2208 => pelny krok; MICROSTEP musi byc 1
 #define USE_SOFT_START 1
 #define USE_SOFT_STOP 0
 
 #define RAMP_UPDATE_MS 5
-#define RAMP_MIN_MS 4000
-#define RAMP_MAX_MS 8000
-#define RAMP_BASE_MS 2000
-#define RAMP_MS_PER_RPM 3
+#define RAMP_MIN_MS 500
+#define RAMP_MAX_MS 2500
+#define RAMP_BASE_MS 400
+#define RAMP_MS_PER_RPM 1
+// Start rampy: min. ten % docelowego RPM (nie od 1 RPM — wtedy silnik „pełznie”)
+#define RAMP_START_PERCENT 50
 
 #define A3144_PULSES_PER_REV 1
 #define A3144_COUNT_ON_FALLING 1

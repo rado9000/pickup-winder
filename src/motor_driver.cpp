@@ -51,7 +51,7 @@ static uint16_t computeRampDurationMs(int fromRpm, int toRpm) {
   return (uint16_t)ms;
 }
 
-// Perlin smootherstep: zerowe przyspieszenie na początku i końcu rampy
+// smoothstep: lagodnie, ale bez wielosekundowego „pełzania” jak smootherstep
 static float rampEase(float t) {
   if (t <= 0.0f) {
     return 0.0f;
@@ -59,7 +59,18 @@ static float rampEase(float t) {
   if (t >= 1.0f) {
     return 1.0f;
   }
-  return t * t * t * (t * (t * 6.0f - 15.0f) + 10.0f);
+  return t * t * (3.0f - 2.0f * t);
+}
+
+static int effectiveRampStartRpm(int targetRpm) {
+  int fromPct = (targetRpm * RAMP_START_PERCENT) / 100;
+  if (fromPct < MIN_RPM) {
+    fromPct = MIN_RPM;
+  }
+  if (fromPct > targetRpm) {
+    fromPct = targetRpm;
+  }
+  return fromPct;
 }
 
 static void setStepFrequency(float stepHz) {
@@ -69,7 +80,11 @@ static void setStepFrequency(float stepHz) {
     commandedStepHz_ = 0.0f;
     return;
   }
-  analogWriteFreq(stepHz);
+  uint32_t freq = (uint32_t)lroundf(stepHz);
+  if (freq < 1) {
+    freq = 1;
+  }
+  analogWriteFreq(freq);
   analogWrite(STEP_PIN, 128);
 }
 
@@ -139,9 +154,26 @@ bool motorDirectionCW() {
 }
 
 void motorStartWinding(int startRpm, int targetRpm, bool preserveSteps) {
-  if (startRpm < MIN_RPM) {
-    startRpm = MIN_RPM;
+  if (targetRpm < MIN_RPM) {
+    targetRpm = MIN_RPM;
   }
+#if USE_SOFT_START
+  int rampStartRpm = effectiveRampStartRpm(targetRpm);
+  if (startRpm <= 0) {
+    startRpm = rampStartRpm;
+  } else {
+    if (startRpm < MIN_RPM) {
+      startRpm = MIN_RPM;
+    }
+    if (startRpm < rampStartRpm) {
+      startRpm = rampStartRpm;
+    }
+  }
+#else
+  if (startRpm < MIN_RPM) {
+    startRpm = targetRpm;
+  }
+#endif
   if (!preserveSteps) {
     stepAccumulator_ = 0.0f;
   }

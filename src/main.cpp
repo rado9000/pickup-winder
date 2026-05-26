@@ -505,7 +505,7 @@ static void startWindingNow() {
   motorSetDirection(targetDirectionCW);
   a3144SetTargetDirection(targetDirectionCW);
   a3144OnMotorDirection(targetDirectionCW);
-  motorStartWinding(MIN_RPM, targetRpm, true);
+  motorStartWinding(0, targetRpm, true);
   windingUpdateMs = millis();
   drawWindingScreen();
 }
