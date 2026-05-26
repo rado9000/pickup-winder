@@ -1,108 +1,38 @@
 #include "motor_driver.h"
 #include "config.h"
 
-#include <hardware/gpio.h>
-#include <hardware/timer.h>
+#include <FastAccelStepper.h>
+
+static FastAccelStepperEngine fasEngine;
+static FastAccelStepper *fasStepper = nullptr;
 
 static bool directionCW_ = true;
-static float commandedStepHz_ = 0.0f;
 static float stepAccumulator_ = 0.0f;
-static uint32_t lastStepUpdateUs_ = 0;
+static int commandedRpm_ = 0;
 
 static bool rampActive_ = false;
 static uint32_t rampStartMs_ = 0;
-static uint32_t lastRampUpdateMs_ = 0;
 static uint32_t rampDurationMs_ = 0;
-static float rampStartHz_ = 0.0f;
-static float rampTargetHz_ = 0.0f;
-static float rampSetpointHz_ = 0.0f;
-static int commandedRpm_ = 0;
+static uint32_t rampStartHz_ = 0;
+static uint32_t rampTargetHz_ = 0;
 
 static bool stopRequested_ = false;
 static bool stopForCompletion_ = false;
 static bool pauseRequested_ = false;
 static bool menuRequested_ = false;
 
-static volatile bool steppingActive_ = false;
-static volatile float velocityHz_ = 0.0f;
-static alarm_id_t nextStepAlarmId_ = 0;
-
-static float rpmToStepHz(int rpm) {
+static uint32_t rpmToStepHz(int rpm) {
   if (rpm <= 0) {
-    return 0.0f;
+    return 0;
   }
-  return (rpm / 60.0f) * (float)STEPS_PER_REV;
+  return (uint32_t)lroundf((rpm / 60.0f) * (float)STEPS_PER_REV);
 }
 
-static int hzToRpm(float hz) {
-  if (hz <= 0.0f) {
+static int hzToRpm(uint32_t hz) {
+  if (hz == 0) {
     return 0;
   }
   return (int)lroundf((hz * 60.0f) / (float)STEPS_PER_REV);
-}
-
-static int64_t stepPulseLowAlarm(alarm_id_t id, void *user_data) {
-  (void)id;
-  (void)user_data;
-  gpio_put(STEP_PIN, 0);
-  return 0;
-}
-
-static void scheduleNextStepAlarm();
-
-static int64_t stepPulseAlarm(alarm_id_t id, void *user_data) {
-  (void)id;
-  (void)user_data;
-  nextStepAlarmId_ = 0;
-
-  if (!steppingActive_) {
-    return 0;
-  }
-
-  float hz = velocityHz_;
-  if (hz < 1.0f) {
-    hz = 1.0f;
-  }
-
-  gpio_put(STEP_PIN, 1);
-  add_alarm_in_us(STEP_PULSE_WIDTH_US, stepPulseLowAlarm, nullptr, true);
-
-  stepAccumulator_ += 1.0f;
-  commandedStepHz_ = hz;
-  commandedRpm_ = hzToRpm(hz);
-
-  scheduleNextStepAlarm();
-  return 0;
-}
-
-static void scheduleNextStepAlarm() {
-  if (!steppingActive_) {
-    return;
-  }
-
-  float hz = velocityHz_;
-  if (hz < 1.0f) {
-    return;
-  }
-
-  uint32_t intervalUs = (uint32_t)lroundf(1000000.0f / hz);
-  if (intervalUs < STEP_MIN_INTERVAL_US) {
-    intervalUs = STEP_MIN_INTERVAL_US;
-  }
-
-  nextStepAlarmId_ = add_alarm_in_us(intervalUs, stepPulseAlarm, nullptr, true);
-}
-
-static void stopStepOutput() {
-  steppingActive_ = false;
-  if (nextStepAlarmId_ > 0) {
-    cancel_alarm(nextStepAlarmId_);
-    nextStepAlarmId_ = 0;
-  }
-  gpio_put(STEP_PIN, 0);
-  commandedStepHz_ = 0.0f;
-  velocityHz_ = 0.0f;
-  rampSetpointHz_ = 0.0f;
 }
 
 static uint32_t computeRampDurationMs(int fromRpm, int toRpm) {
@@ -123,7 +53,7 @@ static uint32_t computeRampDurationMs(int fromRpm, int toRpm) {
   return (uint32_t)ms;
 }
 
-// smootherstep — zerowe przyspieszenie na początku i końcu rampy
+// smootherstep — S-curve (zerowe przyspieszenie na początku i końcu)
 static float rampEase(float t) {
   if (t <= 0.0f) {
     return 0.0f;
@@ -150,80 +80,144 @@ static int effectiveRampStartRpm(int targetRpm) {
 #endif
 }
 
-static void updateRampSetpoint(uint32_t nowMs) {
-  if (!rampActive_) {
+static int32_t computeAccelerationStepsPerSec2(int fromRpm, int toRpm) {
+  uint32_t fromHz = rpmToStepHz(fromRpm);
+  uint32_t toHz = rpmToStepHz(toRpm);
+  uint32_t deltaHz = (toHz > fromHz) ? (toHz - fromHz) : (fromHz - toHz);
+  uint32_t rampMs = computeRampDurationMs(fromRpm, toRpm);
+  float rampSec = (float)rampMs / 1000.0f;
+  if (rampSec < 0.25f) {
+    rampSec = 0.25f;
+  }
+  int32_t accel = (int32_t)lroundf((float)deltaHz / rampSec);
+  if (accel < FAS_ACCEL_MIN) {
+    accel = FAS_ACCEL_MIN;
+  }
+  if (accel > FAS_ACCEL_MAX) {
+    accel = FAS_ACCEL_MAX;
+  }
+  return accel;
+}
+
+static void configureFasMotion(int fromRpm, int toRpm) {
+  if (!fasStepper) {
+    return;
+  }
+  int32_t accel = computeAccelerationStepsPerSec2(fromRpm, toRpm);
+  fasStepper->setAcceleration(accel);
+  fasStepper->setLinearAcceleration(FAS_LINEAR_ACCEL_STEPS);
+}
+
+static void updateCommandedRpmFromFas() {
+  if (!fasStepper) {
+    return;
+  }
+  int32_t mhz = fasStepper->getCurrentSpeedInMilliHz(false);
+  if (mhz < 0) {
+    mhz = -mhz;
+  }
+  commandedRpm_ = hzToRpm((uint32_t)((mhz + 500) / 1000));
+}
+
+static void beginRamp(int startRpm, int targetRpm) {
+  rampActive_ = true;
+  rampStartMs_ = millis();
+  rampStartHz_ = rpmToStepHz(startRpm);
+  rampTargetHz_ = rpmToStepHz(targetRpm);
+  rampDurationMs_ = computeRampDurationMs(startRpm, targetRpm);
+  configureFasMotion(startRpm, targetRpm);
+}
+
+static void updateRamp(uint32_t nowMs) {
+  if (!rampActive_ || !fasStepper) {
     return;
   }
 
   uint32_t elapsed = nowMs - rampStartMs_;
   float t = (rampDurationMs_ == 0) ? 1.0f : ((float)elapsed / (float)rampDurationMs_);
   float eased = rampEase(t);
-  rampSetpointHz_ = rampStartHz_ + (rampTargetHz_ - rampStartHz_) * eased;
-  velocityHz_ = rampSetpointHz_;
-  commandedStepHz_ = velocityHz_;
-  commandedRpm_ = hzToRpm(velocityHz_);
+  float hzF = (float)rampStartHz_ + ((float)rampTargetHz_ - (float)rampStartHz_) * eased;
+  uint32_t hz = (uint32_t)lroundf(hzF);
+  if (hz < 1) {
+    hz = 1;
+  }
+
+  fasStepper->setSpeedInHz(hz);
+  fasStepper->applySpeedAcceleration();
 
   if (elapsed >= rampDurationMs_) {
     rampActive_ = false;
-    rampSetpointHz_ = rampTargetHz_;
-    velocityHz_ = rampTargetHz_;
-    commandedStepHz_ = rampTargetHz_;
-    commandedRpm_ = hzToRpm(rampTargetHz_);
+    fasStepper->setSpeedInHz(rampTargetHz_);
+    fasStepper->applySpeedAcceleration();
   }
+
+  updateCommandedRpmFromFas();
 }
 
-static void applyStepOutput(float stepHz) {
-  commandedStepHz_ = stepHz;
-  rampSetpointHz_ = stepHz;
-
-  if (stepHz <= 0.0f) {
-    stopStepOutput();
+static void startContinuousMotion(int targetRpm, bool cw) {
+  if (!fasStepper) {
     return;
   }
+  cruiseTargetRpm_ = targetRpm;
+  motorSetDirection(cw);
+  fasStepper->setSpeedInHz(rpmToStepHz(targetRpm));
 
-  if (!steppingActive_) {
-    steppingActive_ = true;
-    velocityHz_ = stepHz;
-    scheduleNextStepAlarm();
+  if (cw) {
+    fasStepper->runForward();
+  } else {
+    fasStepper->runBackward();
   }
-}
-
-static void beginRampToTargetHz(float targetHz, float startHz) {
-  rampActive_ = true;
-  rampStartMs_ = millis();
-  rampStartHz_ = startHz;
-  rampTargetHz_ = targetHz;
-  rampSetpointHz_ = startHz;
-  rampDurationMs_ = computeRampDurationMs(hzToRpm(startHz), hzToRpm(targetHz));
-}
-
-static void updateRamp(uint32_t nowMs) {
-  if (!rampActive_) {
-    return;
-  }
-  updateRampSetpoint(nowMs);
-}
-
-static void updateStepCounting() {
-  lastStepUpdateUs_ = micros();
 }
 
 void motorDriverBegin() {
   pinMode(STEP_PIN, OUTPUT);
   pinMode(DIR_PIN, OUTPUT);
   pinMode(EN_PIN, OUTPUT);
-  gpio_put(STEP_PIN, 0);
-  stopStepOutput();
-  motorEnable(false);
+  digitalWrite(STEP_PIN, LOW);
+  digitalWrite(EN_PIN, HIGH);
+
+  fasEngine.init();
+  fasStepper = fasEngine.stepperConnectToPin(STEP_PIN);
+  if (!fasStepper) {
+    return;
+  }
+
+  fasStepper->setDirectionPin(DIR_PIN, DIR_CW_LEVEL == HIGH, FAS_DIR_CHANGE_DELAY_US);
+  fasStepper->setEnablePin(EN_PIN, true);
+  fasStepper->setAutoEnable(true);
+  fasStepper->setDelayToEnable(FAS_ENABLE_DELAY_US);
+  fasStepper->setDelayToDisable(FAS_DISABLE_DELAY_MS);
+  fasStepper->setForwardPlanningTimeInMs(FAS_FORWARD_PLAN_MS);
+  fasStepper->setLinearAcceleration(FAS_LINEAR_ACCEL_STEPS);
 }
 
 void motorSetDirection(bool cw) {
   directionCW_ = cw;
-  digitalWrite(DIR_PIN, cw ? DIR_CW_LEVEL : !DIR_CW_LEVEL);
+  if (!fasStepper) {
+    digitalWrite(DIR_PIN, cw ? DIR_CW_LEVEL : !DIR_CW_LEVEL);
+    return;
+  }
+  if (fasStepper->isRunning()) {
+    if (cw) {
+      fasStepper->runForward();
+    } else {
+      fasStepper->runBackward();
+    }
+  } else {
+    digitalWrite(DIR_PIN, cw ? DIR_CW_LEVEL : !DIR_CW_LEVEL);
+  }
 }
 
 void motorEnable(bool on) {
-  digitalWrite(EN_PIN, on ? LOW : HIGH);
+  if (fasStepper) {
+    if (on) {
+      fasStepper->enableOutputs();
+    } else {
+      fasStepper->disableOutputs();
+    }
+  } else {
+    digitalWrite(EN_PIN, on ? LOW : HIGH);
+  }
 }
 
 bool motorDirectionCW() {
@@ -231,58 +225,65 @@ bool motorDirectionCW() {
 }
 
 void motorStartWinding(int startRpm, int targetRpm, bool preserveSteps) {
+  if (!fasStepper) {
+    return;
+  }
   if (targetRpm < MIN_RPM) {
     targetRpm = MIN_RPM;
   }
+
+  int rampStartRpm = startRpm;
 #if USE_SOFT_START
-  int rampStartRpm = effectiveRampStartRpm(targetRpm);
-  if (startRpm <= 0) {
-    startRpm = rampStartRpm;
-  } else {
-    if (startRpm < MIN_RPM) {
-      startRpm = MIN_RPM;
-    }
-    if (startRpm < rampStartRpm) {
-      startRpm = rampStartRpm;
-    }
+  rampStartRpm = effectiveRampStartRpm(targetRpm);
+  if (startRpm > 0 && startRpm > rampStartRpm) {
+    rampStartRpm = startRpm;
   }
 #else
-  if (startRpm < MIN_RPM) {
-    startRpm = targetRpm;
-  }
+  rampStartRpm = targetRpm;
 #endif
+
   if (!preserveSteps) {
     stepAccumulator_ = 0.0f;
+    fasStepper->setCurrentPosition(0);
+  } else {
+    fasStepper->setCurrentPosition((int32_t)stepAccumulator_);
   }
-  lastStepUpdateUs_ = micros();
+
   stopRequested_ = false;
   stopForCompletion_ = false;
   pauseRequested_ = false;
   menuRequested_ = false;
-  float targetHz = rpmToStepHz(targetRpm);
+
+  directionCW_ = motorDirectionCW();
+  motorEnable(true);
+
 #if USE_SOFT_START
-  float startHz = rpmToStepHz(startRpm);
-  commandedRpm_ = startRpm;
-  velocityHz_ = startHz;
-  rampSetpointHz_ = startHz;
-  steppingActive_ = true;
-  scheduleNextStepAlarm();
-  beginRampToTargetHz(targetHz, startHz);
+  configureFasMotion(rampStartRpm, targetRpm);
+  fasStepper->setSpeedInHz(rpmToStepHz(rampStartRpm));
+  if (directionCW_) {
+    fasStepper->runForward();
+  } else {
+    fasStepper->runBackward();
+  }
+  beginRamp(rampStartRpm, targetRpm);
 #else
-  commandedRpm_ = targetRpm;
-  applyStepOutput(targetHz);
+  configureFasMotion(MIN_RPM, targetRpm);
+  startContinuousMotion(targetRpm, directionCW_);
   rampActive_ = false;
 #endif
+
+  commandedRpm_ = rampStartRpm;
 }
 
 void motorRequestStop(bool forCompletion, bool pause, bool toMenu) {
 #if USE_SOFT_STOP
-  if (!stopRequested_) {
+  if (!stopRequested_ && fasStepper) {
     stopRequested_ = true;
     stopForCompletion_ = forCompletion;
     pauseRequested_ = pause;
     menuRequested_ = toMenu;
-    beginRampToTargetHz(0.0f, velocityHz_);
+    fasStepper->stopMove();
+    rampActive_ = false;
   }
 #else
   (void)forCompletion;
@@ -293,17 +294,30 @@ void motorRequestStop(bool forCompletion, bool pause, bool toMenu) {
 }
 
 void motorUpdate(uint32_t nowMs) {
+#if USE_SOFT_START
   updateRamp(nowMs);
-  updateStepCounting();
+#endif
+  if (fasStepper && fasStepper->isRunning()) {
+    stepAccumulator_ = (float)fasStepper->getCurrentPosition();
+    if (!rampActive_) {
+      updateCommandedRpmFromFas();
+    }
+  }
 }
 
 void motorStopImmediate() {
-  stopStepOutput();
   rampActive_ = false;
+  if (fasStepper) {
+    if (fasStepper->isRunning()) {
+      fasStepper->forceStop();
+    }
+    stepAccumulator_ = (float)fasStepper->getCurrentPosition();
+  }
   stopRequested_ = false;
   stopForCompletion_ = false;
   pauseRequested_ = false;
   menuRequested_ = false;
+  commandedRpm_ = 0;
 }
 
 bool motorRampActive() {
@@ -325,22 +339,33 @@ int motorCommandedRpm() {
   return commandedRpm_;
 }
 float motorCommandedStepHz() {
-  return commandedStepHz_;
+  return (commandedRpm_ / 60.0f) * (float)STEPS_PER_REV;
 }
 
 void motorSingleStep(bool cw) {
+  if (!fasStepper) {
+    return;
+  }
   motorSetDirection(cw);
-  gpio_put(STEP_PIN, 1);
-  delayMicroseconds(STEP_PULSE_WIDTH_US);
-  gpio_put(STEP_PIN, 0);
+  if (cw) {
+    fasStepper->forwardStep(true);
+  } else {
+    fasStepper->backwardStep(true);
+  }
+  stepAccumulator_ = (float)fasStepper->getCurrentPosition();
 }
 
 void motorResetStepAccumulator() {
   stepAccumulator_ = 0.0f;
-  lastStepUpdateUs_ = micros();
+  if (fasStepper) {
+    fasStepper->setCurrentPosition(0);
+  }
 }
 
 long motorCurrentSteps() {
+  if (fasStepper) {
+    return fasStepper->getCurrentPosition();
+  }
   return (long)stepAccumulator_;
 }
 
@@ -350,4 +375,7 @@ float motorStepAccumulator() {
 
 void motorSyncStepAccumulator(long steps) {
   stepAccumulator_ = (float)steps;
+  if (fasStepper) {
+    fasStepper->setCurrentPosition((int32_t)steps);
+  }
 }
