@@ -55,14 +55,16 @@ MS3 na tym module **nieużywany** (LOW).
 | HIGH | LOW | 1/2 | 2 |
 | HIGH | HIGH | 1/16 | 16 |
 
-## Soft start – rampa RPM
+## Soft start – rampa RPM (dwufazowa)
 
-- Start od **1 RPM**, koniec = RPM z menu.
-- Czas rampy ok. **20–90 s** (zależnie od ΔRPM): `RAMP_MS_PER_RPM`, `RAMP_MAX_MS`.
-- Krzywa **smootherstep** (S-curve) — płynne 0 → cel bez skoku.
-- Impulsy STEP: **FastAccelStepper** (hardware PIO), nie PWM i nie `delayMicroseconds()`.
+1. **Faza 1 (~5 s):** liniowo **1 → 200 RPM** (szybciej niż wcześniej).
+2. **Faza 2:** **smootherstep** **200 RPM → cel** (np. 1000 RPM przez ~30–50 s).
+3. Przyspieszenie w bibliotece **ograniczone** (`FAS_ACCEL_CAP_*`) — mniej wibracji i blokad.
+4. Setpoint RPM co **50 ms** (nie co pętlę) — bez walki z wewnętrzną rampą FAS.
 
-Stałe w `config.h`: `FAS_LINEAR_ACCEL_STEPS`, `RAMP_MIN_MS`, `RAMP_MAX_MS`.
+**StealthChop** = spokojnie do ~400–600 RPM. Powyżej, jeśli gubi kroki, na chwilę **SpreadCycle** (test) lub niższe RPM.
+
+Stałe: `RAMP_PIVOT_RPM`, `RAMP_PHASE1_MS`, `FAS_ACCEL_CAP_500RPM`.
 
 ## Kompilacja
 

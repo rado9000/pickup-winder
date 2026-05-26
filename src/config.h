@@ -15,6 +15,7 @@
 #define LCD_COLS 20
 #define LCD_ROWS 4
 
+// Silnik: 17HS4401 NEMA17, 1.8 deg, 200 krokow/obrot (cewka 1.5 Ohm)
 // Kroki na obrót silnika = 200 * MICROSTEP. Musi zgadzać się z MS1/MS2 na module
 // (MS3 na tym module nie jest używany — zostaw LOW).
 // MS1  MS2  => microstep  => MICROSTEP
@@ -34,21 +35,26 @@
 #define USE_SOFT_START 1
 #define USE_SOFT_STOP 0
 
-#define RAMP_MIN_MS 20000
-#define RAMP_MAX_MS 90000
-#define RAMP_BASE_MS 10000
-#define RAMP_MS_PER_RPM 25
-#define RAMP_FROM_MIN_RPM 1
-#define RAMP_START_PERCENT 15
+// Rampa dwufazowa: szybko do RAMP_PIVOT_RPM, potem lagodnie do celu
+#define RAMP_PIVOT_RPM 200
+#define RAMP_PHASE1_MS 5000
+#define RAMP_MIN_MS 15000
+#define RAMP_MAX_MS 75000
+#define RAMP_BASE_MS 8000
+#define RAMP_MS_PER_RPM 35
+#define RAMP_SETPOINT_MS 50
 
-// FastAccelStepper (PIO RP2040) — bez delayMicroseconds na STEP
-#define FAS_LINEAR_ACCEL_STEPS (STEPS_PER_REV * 2)
-#define FAS_ACCEL_MIN 200
-#define FAS_ACCEL_MAX 50000
-#define FAS_DIR_CHANGE_DELAY_US 0
+// FastAccelStepper — niskie przyspieszenie = mniej rezonansu / gubienia krokow
+#define FAS_LINEAR_ACCEL_STEPS (STEPS_PER_REV * 4)
+#define FAS_ACCEL_MIN 300
+#define FAS_ACCEL_MAX 8000
+#define FAS_ACCEL_CAP_500RPM 1800
+#define FAS_ACCEL_CAP_800RPM 1200
+#define FAS_AUTO_ENABLE 0
+#define FAS_DIR_CHANGE_DELAY_US 5
 #define FAS_ENABLE_DELAY_US 100
 #define FAS_DISABLE_DELAY_MS 50
-#define FAS_FORWARD_PLAN_MS 8
+#define FAS_FORWARD_PLAN_MS 20
 
 #define A3144_PULSES_PER_REV 1
 #define A3144_COUNT_ON_FALLING 1

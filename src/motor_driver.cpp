@@ -12,9 +12,12 @@ static int commandedRpm_ = 0;
 
 static bool rampActive_ = false;
 static uint32_t rampStartMs_ = 0;
-static uint32_t rampDurationMs_ = 0;
-static uint32_t rampStartHz_ = 0;
-static uint32_t rampTargetHz_ = 0;
+static uint32_t rampTotalMs_ = 0;
+static uint32_t rampPhase2Ms_ = 0;
+static int rampStartRpm_ = MIN_RPM;
+static int rampTargetRpm_ = MIN_RPM;
+static uint32_t lastSetpointMs_ = 0;
+static uint32_t lastSetpointHz_ = 0;
 
 static bool stopRequested_ = false;
 static bool stopForCompletion_ = false;
@@ -35,11 +38,8 @@ static int hzToRpm(uint32_t hz) {
   return (int)lroundf((hz * 60.0f) / (float)STEPS_PER_REV);
 }
 
-static uint32_t computeRampDurationMs(int fromRpm, int toRpm) {
-  int delta = fromRpm - toRpm;
-  if (delta < 0) {
-    delta = -delta;
-  }
+static uint32_t computeHighSegmentRampMs(int fromRpm, int toRpm) {
+  int delta = toRpm - fromRpm;
   if (delta < 1) {
     delta = 1;
   }
@@ -53,8 +53,7 @@ static uint32_t computeRampDurationMs(int fromRpm, int toRpm) {
   return (uint32_t)ms;
 }
 
-// smootherstep — S-curve (zerowe przyspieszenie na początku i końcu)
-static float rampEase(float t) {
+static float rampEaseHigh(float t) {
   if (t <= 0.0f) {
     return 0.0f;
   }
@@ -64,31 +63,45 @@ static float rampEase(float t) {
   return t * t * t * (t * (t * 6.0f - 15.0f) + 10.0f);
 }
 
-static int effectiveRampStartRpm(int targetRpm) {
-#if RAMP_FROM_MIN_RPM
-  (void)targetRpm;
-  return MIN_RPM;
-#else
-  int fromPct = (targetRpm * RAMP_START_PERCENT) / 100;
-  if (fromPct < MIN_RPM) {
-    fromPct = MIN_RPM;
+static float computeRpmSetpoint(uint32_t elapsedMs, int startRpm, int targetRpm) {
+  if (targetRpm <= startRpm) {
+    return (float)targetRpm;
   }
-  if (fromPct > targetRpm) {
-    fromPct = targetRpm;
+
+  if (targetRpm <= RAMP_PIVOT_RPM) {
+    float t = (rampTotalMs_ == 0) ? 1.0f : ((float)elapsedMs / (float)rampTotalMs_);
+    return (float)startRpm + ((float)targetRpm - (float)startRpm) * rampEaseHigh(t);
   }
-  return fromPct;
-#endif
+
+  if (elapsedMs < RAMP_PHASE1_MS) {
+    float t = (float)elapsedMs / (float)RAMP_PHASE1_MS;
+    return (float)startRpm + ((float)RAMP_PIVOT_RPM - (float)startRpm) * t;
+  }
+
+  uint32_t e2 = elapsedMs - RAMP_PHASE1_MS;
+  float t2 = (rampPhase2Ms_ == 0) ? 1.0f : ((float)e2 / (float)rampPhase2Ms_);
+  float eased = rampEaseHigh(t2);
+  return (float)RAMP_PIVOT_RPM + ((float)targetRpm - (float)RAMP_PIVOT_RPM) * eased;
 }
 
 static int32_t computeAccelerationStepsPerSec2(int fromRpm, int toRpm) {
   uint32_t fromHz = rpmToStepHz(fromRpm);
   uint32_t toHz = rpmToStepHz(toRpm);
   uint32_t deltaHz = (toHz > fromHz) ? (toHz - fromHz) : (fromHz - toHz);
-  uint32_t rampMs = computeRampDurationMs(fromRpm, toRpm);
-  float rampSec = (float)rampMs / 1000.0f;
-  if (rampSec < 0.25f) {
-    rampSec = 0.25f;
+
+  uint32_t rampMs = RAMP_PHASE1_MS;
+  if (toRpm > RAMP_PIVOT_RPM && fromRpm < toRpm) {
+    int segFrom = (fromRpm > RAMP_PIVOT_RPM) ? fromRpm : RAMP_PIVOT_RPM;
+    rampMs += computeHighSegmentRampMs(segFrom, toRpm);
+  } else {
+    rampMs = computeHighSegmentRampMs(fromRpm, toRpm);
   }
+
+  float rampSec = (float)rampMs / 1000.0f;
+  if (rampSec < 1.0f) {
+    rampSec = 1.0f;
+  }
+
   int32_t accel = (int32_t)lroundf((float)deltaHz / rampSec);
   if (accel < FAS_ACCEL_MIN) {
     accel = FAS_ACCEL_MIN;
@@ -96,15 +109,42 @@ static int32_t computeAccelerationStepsPerSec2(int fromRpm, int toRpm) {
   if (accel > FAS_ACCEL_MAX) {
     accel = FAS_ACCEL_MAX;
   }
+  if (toRpm >= 500) {
+    int32_t cap = FAS_ACCEL_CAP_500RPM;
+    if (accel > cap) {
+      accel = cap;
+    }
+  }
+  if (toRpm >= 800) {
+    int32_t cap = FAS_ACCEL_CAP_800RPM;
+    if (accel > cap) {
+      accel = cap;
+    }
+  }
   return accel;
+}
+
+static bool applySpeedHz(uint32_t hz) {
+  if (!fasStepper || hz < 1) {
+    return false;
+  }
+  if (hz == lastSetpointHz_) {
+    return true;
+  }
+  if (fasStepper->setSpeedInHz(hz) != 0) {
+    return false;
+  }
+  lastSetpointHz_ = hz;
+  fasStepper->applySpeedAcceleration();
+  commandedRpm_ = hzToRpm(hz);
+  return true;
 }
 
 static void configureFasMotion(int fromRpm, int toRpm) {
   if (!fasStepper) {
     return;
   }
-  int32_t accel = computeAccelerationStepsPerSec2(fromRpm, toRpm);
-  fasStepper->setAcceleration(accel);
+  fasStepper->setAcceleration(computeAccelerationStepsPerSec2(fromRpm, toRpm));
   fasStepper->setLinearAcceleration(FAS_LINEAR_ACCEL_STEPS);
 }
 
@@ -122,10 +162,31 @@ static void updateCommandedRpmFromFas() {
 static void beginRamp(int startRpm, int targetRpm) {
   rampActive_ = true;
   rampStartMs_ = millis();
-  rampStartHz_ = rpmToStepHz(startRpm);
-  rampTargetHz_ = rpmToStepHz(targetRpm);
-  rampDurationMs_ = computeRampDurationMs(startRpm, targetRpm);
+  lastSetpointMs_ = 0;
+  lastSetpointHz_ = 0;
+  rampStartRpm_ = startRpm;
+  rampTargetRpm_ = targetRpm;
+
+  if (targetRpm > RAMP_PIVOT_RPM) {
+    rampPhase2Ms_ = computeHighSegmentRampMs(RAMP_PIVOT_RPM, targetRpm);
+    rampTotalMs_ = RAMP_PHASE1_MS + rampPhase2Ms_;
+  } else {
+    rampPhase2Ms_ = computeHighSegmentRampMs(startRpm, targetRpm);
+    rampTotalMs_ = rampPhase2Ms_;
+  }
+
   configureFasMotion(startRpm, targetRpm);
+}
+
+static void finishRamp() {
+  if (!fasStepper) {
+    return;
+  }
+  rampActive_ = false;
+  uint32_t hz = rpmToStepHz(rampTargetRpm_);
+  lastSetpointHz_ = 0;
+  applySpeedHz(hz);
+  commandedRpm_ = rampTargetRpm_;
 }
 
 static void updateRamp(uint32_t nowMs) {
@@ -134,38 +195,19 @@ static void updateRamp(uint32_t nowMs) {
   }
 
   uint32_t elapsed = nowMs - rampStartMs_;
-  float t = (rampDurationMs_ == 0) ? 1.0f : ((float)elapsed / (float)rampDurationMs_);
-  float eased = rampEase(t);
-  float hzF = (float)rampStartHz_ + ((float)rampTargetHz_ - (float)rampStartHz_) * eased;
-  uint32_t hz = (uint32_t)lroundf(hzF);
-  if (hz < 1) {
-    hz = 1;
-  }
-
-  fasStepper->setSpeedInHz(hz);
-  fasStepper->applySpeedAcceleration();
-
-  if (elapsed >= rampDurationMs_) {
-    rampActive_ = false;
-    fasStepper->setSpeedInHz(rampTargetHz_);
-    fasStepper->applySpeedAcceleration();
-  }
-
-  updateCommandedRpmFromFas();
-}
-
-static void startContinuousMotion(int targetRpm, bool cw) {
-  if (!fasStepper) {
+  if (elapsed >= rampTotalMs_) {
+    finishRamp();
     return;
   }
-  motorSetDirection(cw);
-  fasStepper->setSpeedInHz(rpmToStepHz(targetRpm));
 
-  if (cw) {
-    fasStepper->runForward();
-  } else {
-    fasStepper->runBackward();
+  if (nowMs - lastSetpointMs_ < (uint32_t)RAMP_SETPOINT_MS) {
+    return;
   }
+  lastSetpointMs_ = nowMs;
+
+  float rpmF = computeRpmSetpoint(elapsed, rampStartRpm_, rampTargetRpm_);
+  uint32_t hz = rpmToStepHz((int)lroundf(rpmF));
+  applySpeedHz(hz);
 }
 
 void motorDriverBegin() {
@@ -183,9 +225,13 @@ void motorDriverBegin() {
 
   fasStepper->setDirectionPin(DIR_PIN, DIR_CW_LEVEL == HIGH, FAS_DIR_CHANGE_DELAY_US);
   fasStepper->setEnablePin(EN_PIN, true);
+#if FAS_AUTO_ENABLE
   fasStepper->setAutoEnable(true);
   fasStepper->setDelayToEnable(FAS_ENABLE_DELAY_US);
   fasStepper->setDelayToDisable(FAS_DISABLE_DELAY_MS);
+#else
+  fasStepper->setAutoEnable(false);
+#endif
   fasStepper->setForwardPlanningTimeInMs(FAS_FORWARD_PLAN_MS);
   fasStepper->setLinearAcceleration(FAS_LINEAR_ACCEL_STEPS);
 }
@@ -196,15 +242,7 @@ void motorSetDirection(bool cw) {
     digitalWrite(DIR_PIN, cw ? DIR_CW_LEVEL : !DIR_CW_LEVEL);
     return;
   }
-  if (fasStepper->isRunning()) {
-    if (cw) {
-      fasStepper->runForward();
-    } else {
-      fasStepper->runBackward();
-    }
-  } else {
-    digitalWrite(DIR_PIN, cw ? DIR_CW_LEVEL : !DIR_CW_LEVEL);
-  }
+  digitalWrite(DIR_PIN, cw ? DIR_CW_LEVEL : !DIR_CW_LEVEL);
 }
 
 void motorEnable(bool on) {
@@ -231,12 +269,9 @@ void motorStartWinding(int startRpm, int targetRpm, bool preserveSteps) {
     targetRpm = MIN_RPM;
   }
 
-  int rampStartRpm = startRpm;
+  int rampStartRpm = MIN_RPM;
 #if USE_SOFT_START
-  rampStartRpm = effectiveRampStartRpm(targetRpm);
-  if (startRpm > 0 && startRpm > rampStartRpm) {
-    rampStartRpm = startRpm;
-  }
+  rampStartRpm = MIN_RPM;
 #else
   rampStartRpm = targetRpm;
 #endif
@@ -253,25 +288,27 @@ void motorStartWinding(int startRpm, int targetRpm, bool preserveSteps) {
   pauseRequested_ = false;
   menuRequested_ = false;
 
-  directionCW_ = motorDirectionCW();
   motorEnable(true);
-
-#if USE_SOFT_START
   configureFasMotion(rampStartRpm, targetRpm);
-  fasStepper->setSpeedInHz(rpmToStepHz(rampStartRpm));
+
+  uint32_t startHz = rpmToStepHz(rampStartRpm);
+  lastSetpointHz_ = 0;
+  fasStepper->setSpeedInHz(startHz);
   if (directionCW_) {
     fasStepper->runForward();
   } else {
     fasStepper->runBackward();
   }
+
+#if USE_SOFT_START
+  commandedRpm_ = rampStartRpm;
   beginRamp(rampStartRpm, targetRpm);
+  applySpeedHz(startHz);
 #else
-  configureFasMotion(MIN_RPM, targetRpm);
-  startContinuousMotion(targetRpm, directionCW_);
+  commandedRpm_ = targetRpm;
+  applySpeedHz(rpmToStepHz(targetRpm));
   rampActive_ = false;
 #endif
-
-  commandedRpm_ = rampStartRpm;
 }
 
 void motorRequestStop(bool forCompletion, bool pause, bool toMenu) {
@@ -306,6 +343,7 @@ void motorUpdate(uint32_t nowMs) {
 
 void motorStopImmediate() {
   rampActive_ = false;
+  lastSetpointHz_ = 0;
   if (fasStepper) {
     if (fasStepper->isRunning()) {
       fasStepper->forceStop();
