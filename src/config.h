@@ -39,7 +39,8 @@
 #define A3144_DEBOUNCE_US 800
 #define A3144_MIN_INTERVAL_US ((A3144_PERIOD_US(MAX_RPM_A3144) * 45UL) / 100UL)
 
-#define USE_GAUSS_MONITOR 1
+// Testowo wyłączone — włącz z powrotem ustawiając na 1
+#define USE_GAUSS_MONITOR 0
 #define HALL_ADC_REF_V 3.3f
 #define HALL_ADC_MAX 4095
 #define HALL_ZERO_V (HALL_ADC_REF_V / 2.0f)
