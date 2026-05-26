@@ -158,7 +158,6 @@ static void startContinuousMotion(int targetRpm, bool cw) {
   if (!fasStepper) {
     return;
   }
-  cruiseTargetRpm_ = targetRpm;
   motorSetDirection(cw);
   fasStepper->setSpeedInHz(rpmToStepHz(targetRpm));
 

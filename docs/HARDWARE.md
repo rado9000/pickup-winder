@@ -6,6 +6,17 @@
 - Napęd: **TMC2208 Step/Dir** + **FastAccelStepper** (PIO RP2040, bez `delayMicroseconds` na STEP)
 - Rampa **S-curve** (smootherstep) + przyspieszenie w bibliotece
 
+## Silnik: 17HS4401 (NEMA 17)
+
+| Parametr | Wartość | W firmware |
+| --- | --- | --- |
+| Krok | 1,8° | 200 kroków/obrót silnika |
+| Microstep (MS1=MS2=LOW) | 1/8 | `MICROSTEP 8` → 1600 impulsów/obrót wału |
+| Rezystancja cewki | 1,5 Ω | Ustaw **VREF** na TMC2208 (typ. ~1,0–1,2 A RMS na fazę, z chłodzeniem) |
+| Moment | ~4,28 kg·cm | Przy zbyt niskim prądzie gubi kroki przy wyższym RPM |
+
+Rezystancja 1,5 Ω jest niska — **nie** kręć potencjometrem prądu „na max” bez pomiaru; silnik i sterownik mogą się przegrzewać.
+
 ## Mapowanie pinów
 
 | Moduł | GPIO |
