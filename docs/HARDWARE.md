@@ -1,70 +1,29 @@
 # Pickup winder – sprzęt i kalibracja
 
-## Scalony firmware
+## Napęd STEP (jak w starym, działającym softie)
 
-- Menu, presety, prewind, A3144, odliczanie
-- Napęd: **TMC2208 Step/Dir** + **FastAccelStepper** (PIO RP2040, bez `delayMicroseconds` na STEP)
-- Rampa **S-curve** (smootherstep) + przyspieszenie w bibliotece
+- **analogWriteFreq** na GP2 + niski duty (`STEP_PWM_DUTY`) — ten sam zestaw co przy 1000 RPM wcześniej
+- **Bez FastAccelStepper** — biblioteka powodowała rezonans i zatrzymania przy 400–500 RPM
+- **Rampa schodkowa:** 50 → 100 → … → cel RPM, na **każdym progu postój 2,5 s** (bez gwałtu na „końcu rampy”)
 
-## Silnik: 17HS4401 (NEMA 17)
+## Silnik 17HS4401 + TMC2208
 
-| Parametr | Wartość | W firmware |
-| --- | --- | --- |
-| Krok | 1,8° | 200 kroków/obrót silnika |
-| Microstep (MS1=MS2=LOW) | 1/8 | `MICROSTEP 8` → 1600 impulsów/obrót wału |
-| Rezystancja cewki | 1,5 Ω | Ustaw **VREF** na TMC2208 (typ. ~1,0–1,2 A RMS na fazę, z chłodzeniem) |
-| Moment | ~4,28 kg·cm | Przy zbyt niskim prądzie gubi kroki przy wyższym RPM |
+| | |
+|---|---|
+| 200 kroków/obrót, MS 1/8 | `MICROSTEP 8` |
+| StealthChop | cicho do ~400 RPM |
+| Powyżej 500 RPM | jeśli gubi kroki: **VREF** ↑ lub test **SpreadCycle** |
+| VREF | ~1,0–1,2 A RMS/faza (cewka 1,5 Ω) |
 
-Rezystancja 1,5 Ω jest niska — **nie** kręć potencjometrem prądu „na max” bez pomiaru; silnik i sterownik mogą się przegrzewać.
+## Dlaczego drgało przy 400 RPM „na końcu”?
 
-## Mapowanie pinów
+Koniec segmentu rampy = nagła zmiana przyspieszenia (FAS + S-curve). Teraz: **stała częstotliwość + hold** na 400, 450, 500… przed dalszym wzrostem.
 
-| Moduł | GPIO |
-| --- | --- |
-| LCD I2C SDA/SCL | GP0 / GP1 |
-| STEP / DIR / EN | GP2 / GP3 / GP10 |
-| Enkoder A/B/SW | GP6 / GP7 / GP8 |
-| A3144 | GP9 |
-| AH49HZ3 ADC | GP26 |
+## Dostrajanie (`config.h`)
 
-## TMC2208 – StealthChop (najważniejsze na module)
-
-Firmware **nie używa UART** do TMC — tryb cichy ustawiasz na **module**:
-
-| Tryb | Charakterystyka | Do winder'a |
-| --- | --- | --- |
-| **SpreadCycle** | większy moment, bardziej szarpany dźwięk | niezalecane |
-| **StealthChop** | cicho, płynnie, małe wibracje | **zalecane** |
-
-**Co zrobić:**
-
-1. Na płytce TMC2208 włącz **StealthChop** (złącze/jumper z dokumentacji modułu — często etykieta `SPREAD` / `STEALTH` albo mostek MS/CFG zależnie od wersji).
-2. Zostaw **MS1=LOW, MS2=LOW** (u Ciebie 1/8 kroku) i `MICROSTEP 8` w `config.h`.
-3. Ustaw sensowny prąd (**VREF** / potencjometr) — za niski = gubienie kroków przy 1000 RPM, za wysoki = grzanie.
-
-Bez StealthChop na sterowniku żadna rampa w kodzie nie usunie piszczenia i rezonansu w całości.
-
-## TMC2208 – microstep (MS1 / MS2)
-
-MS3 na tym module **nieużywany** (LOW).
-
-| MS1 | MS2 | Microstep | `MICROSTEP` |
-| --- | --- | --- | --- |
-| LOW | LOW | 1/8 | **8** |
-| LOW | HIGH | 1/4 | 4 |
-| HIGH | LOW | 1/2 | 2 |
-| HIGH | HIGH | 1/16 | 16 |
-
-## Soft start – rampa RPM (dwufazowa)
-
-1. **Faza 1 (~5 s):** liniowo **1 → 200 RPM** (szybciej niż wcześniej).
-2. **Faza 2:** **smootherstep** **200 RPM → cel** (np. 1000 RPM przez ~30–50 s).
-3. Przyspieszenie w bibliotece **ograniczone** (`FAS_ACCEL_CAP_*`) — mniej wibracji i blokad.
-4. Setpoint RPM co **50 ms** (nie co pętlę) — bez walki z wewnętrzną rampą FAS.
-
-**StealthChop** = spokojnie do ~400–600 RPM. Powyżej, jeśli gubi kroki, na chwilę **SpreadCycle** (test) lub niższe RPM.
-
-Stałe: `RAMP_PIVOT_RPM`, `RAMP_PHASE1_MS`, `FAS_ACCEL_CAP_500RPM`.
+- `RAMP_HOLD_MS` — dłuższy postój = spokojniej
+- `RAMP_SEG_MS_PER_RPM` — wolniejszy dojazd między progami
+- `RAMP_LADDER_TABLE` — progi RPM
 
 ## Kompilacja
 
@@ -72,4 +31,4 @@ Stałe: `RAMP_PIVOT_RPM`, `RAMP_PHASE1_MS`, `FAS_ACCEL_CAP_500RPM`.
 pio run -e pico
 ```
 
-Wgraj: `.pio/build/pico/firmware.uf2` (BOOTSEL).
+Wgraj `.pio/build/pico/firmware.uf2` (BOOTSEL).

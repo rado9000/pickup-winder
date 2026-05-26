@@ -35,26 +35,18 @@
 #define USE_SOFT_START 1
 #define USE_SOFT_STOP 0
 
-// Rampa dwufazowa: szybko do RAMP_PIVOT_RPM, potem lagodnie do celu
-#define RAMP_PIVOT_RPM 200
-#define RAMP_PHASE1_MS 5000
-#define RAMP_MIN_MS 15000
-#define RAMP_MAX_MS 75000
-#define RAMP_BASE_MS 8000
-#define RAMP_MS_PER_RPM 35
-#define RAMP_SETPOINT_MS 50
+// Rampa schodkowa: kazdy prog RPM + postoj (hold) — bez szarpniecia na koncu segmentu
+#define RAMP_LADDER_TABLE \
+  { 50, 100, 150, 200, 250, 300, 350, 400, 450, 500, 600, 700, 800, 900, 1000 }
+#define RAMP_SEG_BASE_MS 2500
+#define RAMP_SEG_MS_PER_RPM 45
+#define RAMP_SEG_MIN_MS 2000
+#define RAMP_SEG_MAX_MS 12000
+#define RAMP_HOLD_MS 2500
 
-// FastAccelStepper — niskie przyspieszenie = mniej rezonansu / gubienia krokow
-#define FAS_LINEAR_ACCEL_STEPS (STEPS_PER_REV * 4)
-#define FAS_ACCEL_MIN 300
-#define FAS_ACCEL_MAX 8000
-#define FAS_ACCEL_CAP_500RPM 1800
-#define FAS_ACCEL_CAP_800RPM 1200
-#define FAS_AUTO_ENABLE 0
-#define FAS_DIR_CHANGE_DELAY_US 5
-#define FAS_ENABLE_DELAY_US 100
-#define FAS_DISABLE_DELAY_MS 50
-#define FAS_FORWARD_PLAN_MS 20
+// STEP jak w dzialajacym starym softie (analogWriteFreq + niski duty)
+#define STEP_PWM_DUTY 64
+#define PREWIND_PULSE_US 5
 
 #define A3144_PULSES_PER_REV 1
 #define A3144_COUNT_ON_FALLING 1
