@@ -62,11 +62,13 @@ W tym projekcie robi to `tmc2209ProbeVersion()` / `tmc2209ConfigureOnce()` w `sr
 
 ### Firmware
 
-| `TMC_UART_BOOT_PROBE` | Po starcie na LCD (linia 3): szybki test bez blokowania menu |
+| `TMC_UART_BOOT_PROBE` | 0 domyślnie — **1 tylko gdy UART podłączony** (inaczej freeze menu) |
 | `USE_TMC2209_UART` | 1 = pełna konfiguracja SpreadCycle przy **pierwszym** nawijaniu |
 | `TMC_UART_USB_DEBUG` | 1 = dodatkowo `Serial.println(ver, HEX)` na USB |
 
 Gdy na LCD widzisz **„TMC UART OK 0x21”**, możesz ustawić `USE_TMC2209_UART` na `1` i przebudować.
+
+**Uwaga:** `TMC_UART_BOOT_PROBE=1` bez podłączonego UART (lub złej zworki R8) **zawiesza menu** — biblioteka TMC czeka na odpowiedź. Domyślnie wyłączone; test UART włącz dopiero po okablowaniu.
 
 ## LCD przy starcie (`TMC_UART_BOOT_PROBE`)
 
@@ -79,7 +81,7 @@ Gdy na LCD widzisz **„TMC UART OK 0x21”**, możesz ustawić `USE_TMC2209_UAR
 | Stała | Domyślnie |
 | --- | --- |
 | `USE_TMC2209_UART` | 0 (menu od razu; włącz po teście 0x21) |
-| `TMC_UART_BOOT_PROBE` | 1 |
+| `TMC_UART_BOOT_PROBE` | 0 |
 | `TMC_EN_SPREADCYCLE` | 1 |
 | `TMC_USE_INTERPOLATION` | 0 |
 | `TMC_PWM_AUTOSCALE` | 0 |

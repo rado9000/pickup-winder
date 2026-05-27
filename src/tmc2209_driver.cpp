@@ -16,7 +16,13 @@ static void tmcUartBeginPins() {
   Serial1.setRX(TMC_UART_RX_PIN);
   Serial1.setTX(TMC_UART_TX_PIN);
   Serial1.begin(TMC_UART_BAUD);
-  delay(50);
+  Serial1.setTimeout(TMC_UART_READ_TIMEOUT_MS);
+  delay(10);
+}
+
+static void tmcUartEnd() {
+  Serial1.flush();
+  Serial1.end();
 }
 
 static bool tmcVersionLooksValid(uint8_t ver) {
@@ -27,15 +33,20 @@ int tmc2209ProbeVersion() {
   tmcUartBeginPins();
 
   TMC2209Stepper driver(&Serial1, TMC_R_SENSE, TMC_DRIVER_ADDRESS);
-  driver.begin();
-
+  // Bez begin() — begin() robi zapisy GCONF przez UART i moze wisiec bez TMC.
   uint8_t ver = driver.version();
+
 #if TMC_UART_USB_DEBUG
   Serial.begin(115200);
   delay(100);
   Serial.print(F("TMC2209 version=0x"));
   Serial.println(ver, HEX);
 #endif
+
+#if !USE_TMC2209_UART
+  tmcUartEnd();
+#endif
+
   if (!tmcVersionLooksValid(ver)) {
     return -1;
   }
@@ -99,6 +110,7 @@ bool tmc2209ConfigureOnce() {
 
   int ver = tmc2209ProbeVersion();
   if (ver != TMC_VERSION_OK) {
+    tmcUartEnd();
     return false;
   }
 
@@ -109,6 +121,7 @@ bool tmc2209ConfigureOnce() {
 
   tmcDriver = new TMC2209Stepper(&Serial1, TMC_R_SENSE, TMC_DRIVER_ADDRESS);
   if (tmcDriver == nullptr) {
+    tmcUartEnd();
     return false;
   }
 

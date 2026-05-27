@@ -14,8 +14,9 @@
 // TMC2209 UART (MKS V2.0): PDN_UART -> Pico RX (GP5), Pico TX (GP4) przez 1k do PDN_UART
 // 1 = konfiguracja TMC przez UART (wymaga zworki R8 + przewodu). 0 = od razu dziala menu.
 #define USE_TMC2209_UART 0
-// Szybki test version() na LCD (linia 3) w pierwszej petli loop — bez pelnej konfiguracji TMC.
-#define TMC_UART_BOOT_PROBE 1
+// 1 = test version() na LCD w 1. petli loop (TYLKO gdy UART podlaczony — inaczej freeze).
+#define TMC_UART_BOOT_PROBE 0
+#define TMC_UART_READ_TIMEOUT_MS 2
 // 1 = Serial.println(ver, HEX) przez USB (115200) przy probie.
 #define TMC_UART_USB_DEBUG 0
 #define TMC_UART_TX_PIN 4

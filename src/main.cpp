@@ -8,7 +8,9 @@
 #include "gauss_monitor.h"
 #include "motor_driver.h"
 #include "presets_store.h"
+#if TMC_UART_BOOT_PROBE
 #include "tmc2209_driver.h"
+#endif
 
 LiquidCrystal_I2C lcd(LCD_I2C_ADDRESS, LCD_COLS, LCD_ROWS);
 
