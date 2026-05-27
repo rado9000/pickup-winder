@@ -1,69 +1,82 @@
+/*
+ * Napęd krokowy: STEP/DIR/EN + jeden timer Pico (50 µs).
+ * RPM -> okres kroku; rampa +20 RPM / 600 ms bez restartu timera.
+ * Brak FastAccelStepper, brak UART TMC.
+ */
 #include "motor_driver.h"
 #include "config.h"
 
 #include <hardware/gpio.h>
 #include <pico/stdlib.h>
 
-#if USE_TMC2209_UART
-#include "tmc2209_driver.h"
-#endif
+static struct repeating_timer tickTimer_;
+static bool tickTimerOn_ = false;
 
-static bool directionCW_ = true;
-static bool motorRunning_ = false;
-static struct repeating_timer stepTimer_;
-static bool stepTimerLive_ = false;
+static volatile bool run_ = false;
+static volatile uint32_t stepPeriodUs_ = 1000000UL;
+static volatile uint32_t stepAccumUs_ = 0;
 
-static int windTargetRpm_ = 0;
-static int windCurrentRpm_ = 0;
-static bool windRamping_ = false;
-static uint32_t windLastStepMs_ = 0;
+static bool dirCw_ = true;
+static int targetRpm_ = 0;
+static int currentRpm_ = 0;
+static bool ramping_ = false;
+static uint32_t lastRampMs_ = 0;
 static volatile long stepCount_ = 0;
 
-static int rampStartRpmForTarget(int targetRpm) {
-  int start = MOTOR_RPM_RAMP_START;
-  if (targetRpm < start) {
-    return targetRpm;
-  }
-  return start;
-}
-
-static uint32_t stepIntervalUsForRpm(int rpm) {
+static uint32_t usPerStep(int rpm) {
   if (rpm < MIN_RPM) {
     rpm = MIN_RPM;
   }
   uint32_t us = (uint32_t)(60000000UL / ((uint32_t)rpm * (uint32_t)STEPS_PER_REV));
-  if (us < MOTOR_MIN_STEP_INTERVAL_US) {
-    us = MOTOR_MIN_STEP_INTERVAL_US;
+  if (us < (uint32_t)MOTOR_MIN_STEP_US) {
+    us = (uint32_t)MOTOR_MIN_STEP_US;
   }
   return us;
 }
 
-static bool stepTimerHandler(struct repeating_timer *rt) {
-  (void)rt;
+static void pulseStep() {
   gpio_put(STEP_PIN, 1);
-  busy_wait_us(MOTOR_STEP_PULSE_US);
   gpio_put(STEP_PIN, 0);
   stepCount_++;
+}
+
+static bool tickHandler(struct repeating_timer *rt) {
+  (void)rt;
+  if (!run_) {
+    return true;
+  }
+
+  uint32_t period = stepPeriodUs_;
+  stepAccumUs_ += (uint32_t)MOTOR_TICK_US;
+  if (stepAccumUs_ < period) {
+    return true;
+  }
+  stepAccumUs_ -= period;
+
+  pulseStep();
   return true;
 }
 
-static void stopStepTimer() {
-  if (stepTimerLive_) {
-    cancel_repeating_timer(&stepTimer_);
-    stepTimerLive_ = false;
+static void timerStart() {
+  if (tickTimerOn_) {
+    return;
+  }
+  if (add_repeating_timer_us(-(int64_t)MOTOR_TICK_US, tickHandler, nullptr,
+                             &tickTimer_)) {
+    tickTimerOn_ = true;
   }
 }
 
-static void applyStepRateRpm(int rpm) {
-  stopStepTimer();
-  if (!motorRunning_) {
-    return;
+static void timerStop() {
+  if (tickTimerOn_) {
+    cancel_repeating_timer(&tickTimer_);
+    tickTimerOn_ = false;
   }
-  uint32_t intervalUs = stepIntervalUsForRpm(rpm);
-  if (add_repeating_timer_us(-(int64_t)intervalUs, stepTimerHandler, nullptr,
-                             &stepTimer_)) {
-    stepTimerLive_ = true;
-  }
+}
+
+static void setRpmNow(int rpm) {
+  currentRpm_ = rpm;
+  stepPeriodUs_ = usPerStep(rpm);
 }
 
 void motorDriverBegin() {
@@ -79,8 +92,8 @@ void motorDriverBegin() {
 }
 
 void motorSetDirection(bool cw) {
-  directionCW_ = cw;
-  gpio_put(DIR_PIN, (cw == DIR_CW_LEVEL) ? 1 : 0);
+  dirCw_ = cw;
+  gpio_put(DIR_PIN, (cw == (DIR_CW_LEVEL == HIGH)) ? 1 : 0);
 }
 
 void motorEnable(bool on) {
@@ -88,59 +101,62 @@ void motorEnable(bool on) {
 }
 
 bool motorDirectionCW() {
-  return directionCW_;
+  return dirCw_;
 }
 
 void motorStartWinding(int targetRpm) {
   if (targetRpm < MIN_RPM) {
     targetRpm = MIN_RPM;
-  } else if (targetRpm > MAX_RPM) {
+  }
+  if (targetRpm > MAX_RPM) {
     targetRpm = MAX_RPM;
   }
 
-#if USE_TMC2209_UART
-  (void)tmc2209ApplySpreadCycleOnce();
-#endif
-
   motorStopImmediate();
 
-  windTargetRpm_ = targetRpm;
-  windCurrentRpm_ = rampStartRpmForTarget(targetRpm);
-  windRamping_ = true;
-  windLastStepMs_ = millis();
+  targetRpm_ = targetRpm;
+  int start = MOTOR_RPM_RAMP_START;
+  if (targetRpm < start) {
+    start = targetRpm;
+  }
+
+  ramping_ = true;
+  lastRampMs_ = millis();
   stepCount_ = 0;
+  stepAccumUs_ = 0;
 
   motorEnable(true);
-  motorRunning_ = true;
-  applyStepRateRpm(windCurrentRpm_);
+  setRpmNow(start);
+  run_ = true;
+  timerStart();
 }
 
 void motorUpdate() {
-  if (!motorRunning_ || !windRamping_) {
+  if (!run_ || !ramping_) {
     return;
   }
-  if (windCurrentRpm_ >= windTargetRpm_) {
+  if (currentRpm_ >= targetRpm_) {
+    ramping_ = false;
     return;
   }
 
-  uint32_t nowMs = millis();
-  if (nowMs - windLastStepMs_ < (uint32_t)MOTOR_RPM_RAMP_INTERVAL_MS) {
+  uint32_t now = millis();
+  if (now - lastRampMs_ < (uint32_t)MOTOR_RPM_RAMP_INTERVAL_MS) {
     return;
   }
-  windLastStepMs_ = nowMs;
+  lastRampMs_ = now;
 
-  windCurrentRpm_ += MOTOR_RPM_RAMP_STEP;
-  if (windCurrentRpm_ > windTargetRpm_) {
-    windCurrentRpm_ = windTargetRpm_;
+  int next = currentRpm_ + MOTOR_RPM_RAMP_STEP;
+  if (next > targetRpm_) {
+    next = targetRpm_;
   }
-
-  applyStepRateRpm(windCurrentRpm_);
+  setRpmNow(next);
 }
 
 void motorStopImmediate() {
-  windRamping_ = false;
-  motorRunning_ = false;
-  stopStepTimer();
+  run_ = false;
+  ramping_ = false;
+  timerStop();
   gpio_put(STEP_PIN, 0);
 }
 
