@@ -44,7 +44,7 @@ static bool looksLikeValidPreset(const Preset &preset) {
   if (preset.turns < 1 || preset.turns > MAX_TURNS) {
     return false;
   }
-  if (preset.rpm < MIN_RPM || preset.rpm > MAX_RPM_USER) {
+  if (preset.rpm < MIN_RPM || preset.rpm > MAX_RPM) {
     return false;
   }
   if (preset.name[0] == '\0' || !isPrintableNameChar(preset.name[0])) {

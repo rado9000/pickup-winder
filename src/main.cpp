@@ -8,9 +8,6 @@
 #include "gauss_monitor.h"
 #include "motor_driver.h"
 #include "presets_store.h"
-#if TMC_UART_BOOT_PROBE
-#include "tmc2209_driver.h"
-#endif
 
 LiquidCrystal_I2C lcd(LCD_I2C_ADDRESS, LCD_COLS, LCD_ROWS);
 
@@ -156,8 +153,8 @@ static void clampTargets() {
   }
   if (targetRpm < MIN_RPM) {
     targetRpm = MIN_RPM;
-  } else if (targetRpm > MAX_RPM_USER) {
-    targetRpm = MAX_RPM_USER;
+  } else if (targetRpm > MAX_RPM) {
+    targetRpm = MAX_RPM;
   }
   syncDigitsFromTargets();
 }
@@ -348,9 +345,9 @@ static void drawGaussValues() {
   float g = gaussValue();
   float a = fabsf(g);
   const char *pole = "CENTER";
-  if (g >= GAUSS_ENTER_THRESHOLD) {
+  if (g >= 50.0f) {
     pole = "N";
-  } else if (g <= -GAUSS_ENTER_THRESHOLD) {
+  } else if (g <= -50.0f) {
     pole = "S";
   }
   snprintf(line, sizeof(line), "G:%7.1f  Pole:%s", a, pole);
@@ -508,7 +505,8 @@ static void startWindingNow() {
   motorSetDirection(targetDirectionCW);
   a3144SetTargetDirection(targetDirectionCW);
   a3144OnMotorDirection(targetDirectionCW);
-  motorStartWinding(0, targetRpm, true);
+  a3144Reset();
+  motorStartWinding(targetRpm);
   windingUpdateMs = millis();
   drawWindingScreen();
 }
@@ -518,8 +516,10 @@ void setup() {
   pinMode(ENC_B_PIN, INPUT_PULLUP);
   pinMode(ENC_BTN_PIN, INPUT_PULLUP);
 
+#if USE_GAUSS_MONITOR
   gaussBegin();
   (void)gaussBootSetup();
+#endif
 
   Wire.setSDA(I2C_SDA_PIN);
   Wire.setSCL(I2C_SCL_PIN);
@@ -553,31 +553,7 @@ void setup() {
   drawManualScreen();
 }
 
-#if TMC_UART_BOOT_PROBE
-static void showTmcUartProbeOnLcd() {
-  int ver = tmc2209ProbeVersion();
-  lcd.setCursor(0, 3);
-  if (ver == TMC_VERSION_OK) {
-    printPadded("TMC UART OK 0x21");
-  } else if (ver < 0) {
-    printPadded("TMC UART: 0/255?");
-  } else {
-    char line[21];
-    snprintf(line, sizeof(line), "TMC UART 0x%02X", ver);
-    printPadded(line);
-  }
-}
-#endif
-
 void loop() {
-#if TMC_UART_BOOT_PROBE
-  static bool tmcBootProbeDone = false;
-  if (!tmcBootProbeDone) {
-    tmcBootProbeDone = true;
-    showTmcUartProbeOnLcd();
-  }
-#endif
-
   ButtonEvent buttonEvent = readButton();
   unsigned long nowMs = millis();
   int delta = readEncoderDetent();
@@ -779,7 +755,7 @@ void loop() {
           Preset p{};
           strncpy(p.name, presetName, sizeof(p.name) - 1);
           p.turns = targetTurns;
-          p.rpm = targetRpm > MAX_RPM_USER ? MAX_RPM_USER : targetRpm;
+          p.rpm = targetRpm > MAX_RPM ? MAX_RPM : targetRpm;
           p.directionCW = targetDirectionCW;
           p.valid = true;
           presetsSave(slot, p);
@@ -792,7 +768,7 @@ void loop() {
     case SCREEN_PRESET_VIEW:
       if (buttonEvent == BTN_CLICK) {
         targetTurns = presets[presetIndex].turns;
-        targetRpm = presets[presetIndex].rpm > MAX_RPM_USER ? MAX_RPM_USER : presets[presetIndex].rpm;
+        targetRpm = presets[presetIndex].rpm > MAX_RPM ? MAX_RPM : presets[presetIndex].rpm;
         targetDirectionCW = presets[presetIndex].directionCW;
         syncDigitsFromTargets();
         enterPrewind();
@@ -857,7 +833,7 @@ void loop() {
       break;
 
     case SCREEN_WINDING:
-      motorUpdate(nowMs);
+      motorUpdate();
       a3144OnMotorDirection(motorDirectionCW());
 
       if (windingPaused) {

@@ -11,73 +11,30 @@
 #define EN_PIN 10
 #define HALL_ADC_PIN 26
 
-// TMC2209 UART (MKS V2.0): PDN_UART -> Pico RX (GP5), Pico TX (GP4) przez 1k do PDN_UART
-// 1 = konfiguracja TMC przez UART (wymaga zworki R8 + przewodu). 0 = od razu dziala menu.
-#define USE_TMC2209_UART 0
-// 1 = test version() na LCD w 1. petli loop (TYLKO gdy UART podlaczony — inaczej freeze).
-#define TMC_UART_BOOT_PROBE 0
-#define TMC_UART_READ_TIMEOUT_MS 2
-// 1 = Serial.println(ver, HEX) przez USB (115200) przy probie.
-#define TMC_UART_USB_DEBUG 0
-#define TMC_UART_TX_PIN 4
-#define TMC_UART_RX_PIN 5
-#define TMC_UART_BAUD 115200
-#define TMC_VERSION_OK 0x21
-#define TMC_DRIVER_ADDRESS 0b00
-#define TMC_R_SENSE 0.11f
-#define TMC_FCLK_HZ 12000000UL
-#define TMC_MICROSTEPS MICROSTEP
-#define TMC_RUN_CURRENT_MA 1200
-#define TMC_HOLD_MULTIPLIER 0.35f
-// Wysokie RPM: SpreadCycle ON, bez interpolacji 1/8->256, bez pwm_autoscale
-#define TMC_EN_SPREADCYCLE 1
-#define TMC_USE_INTERPOLATION 0
-#define TMC_PWM_AUTOSCALE 0
-
 #define LCD_I2C_ADDRESS 0x27
 #define LCD_COLS 20
 #define LCD_ROWS 4
 
-// Silnik: 17HS4401 NEMA17, 1.8 deg, 200 krokow/obrot (cewka 1.5 Ohm)
-// MS1=LOW MS2=LOW => 1/8 (najlepsza stabilnosc przy 1000+ RPM)
+// 17HS4401 + TMC2209 MS1=MS2=LOW => 1/8 microstep
 #define MICROSTEP 8
 #define STEPS_PER_REV (200 * MICROSTEP)
 #define COUNT_STEPS_PER_REV STEPS_PER_REV
 #define DIR_CW_LEVEL HIGH
 
 #define MIN_RPM 1
-#define MAX_RPM_A3144 2000
-#define MAX_RPM_USER MAX_RPM_A3144
+#define MAX_RPM 1500
 
-#define USE_SOFT_START 1
-#define USE_SOFT_STOP 0
-
-// FastAccelStepper: JEDNA rampa w bibliotece (steps/s^2), bez rampy w petli loop()
-#define FAS_ACCEL_DEFAULT 8000
-#define FAS_ACCEL_MID_RPM 6500
-#define FAS_ACCEL_HIGH_RPM 5000
-#define FAS_ACCEL_MIN 2500
-#define FAS_ACCEL_MAX 12000
-#define FAS_LINEAR_ACCEL_STEPS 800
-#define FAS_DIR_CHANGE_DELAY_US 5
-#define FAS_FORWARD_PLAN_MS 20
+// Jedna stala rampa FastAccelStepper (kroki/s^2). ~8 s do 1500 RPM — plynnie.
+#define MOTOR_ACCEL_STEPS_S2 4000
+#define MOTOR_DIR_SETUP_US 5
 
 #define A3144_PULSES_PER_REV 1
 #define A3144_COUNT_ON_FALLING 1
 #define A3144_PERIOD_US(rpm) (60000000UL / (uint32_t)(rpm))
 #define A3144_DEBOUNCE_US 800
-#define A3144_MIN_INTERVAL_US ((A3144_PERIOD_US(MAX_RPM_A3144) * 45UL) / 100UL)
+#define A3144_MIN_INTERVAL_US ((A3144_PERIOD_US(MAX_RPM) * 45UL) / 100UL)
 
 #define USE_GAUSS_MONITOR 0
-#define HALL_ADC_REF_V 3.3f
-#define HALL_ADC_MAX 4095
-#define HALL_ZERO_V (HALL_ADC_REF_V / 2.0f)
-#define HALL_MV_PER_GAUSS 0.92f
-#define GAUSS_ENTER_THRESHOLD 50.0f
-#define GAUSS_EXIT_THRESHOLD 50.0f
-#define GAUSS_ENTER_HOLD_MS 250
-#define GAUSS_EXIT_HOLD_MS 250
-#define GAUSS_CALIB_SAMPLES 10
 
 #define MAX_PRESETS 32
 #define MAX_TURNS 99999L
@@ -87,6 +44,6 @@
 #define EEPROM_SIZE 1024
 #define LONG_PRESS_MS 800
 #define BLINK_MS 500
-#define WINDING_UI_INTERVAL_MS 250
+#define WINDING_UI_INTERVAL_MS 500
 #define ENCODER_DETENTS_PER_REV 20
 #define PREWIND_STEP_INTERVAL_US 800

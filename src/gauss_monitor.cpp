@@ -1,6 +1,17 @@
 #include "gauss_monitor.h"
 #include "config.h"
 
+#if USE_GAUSS_MONITOR
+#define HALL_ADC_REF_V 3.3f
+#define HALL_ADC_MAX 4095
+#define HALL_MV_PER_GAUSS 0.92f
+#define GAUSS_ENTER_THRESHOLD 50.0f
+#define GAUSS_EXIT_THRESHOLD 50.0f
+#define GAUSS_ENTER_HOLD_MS 250
+#define GAUSS_EXIT_HOLD_MS 250
+#define GAUSS_CALIB_SAMPLES 10
+#endif
+
 static float gaussValue_ = 0.0f;
 static int32_t gaussBaselineAdc_ = 0;
 static int gaussReturnMode_ = 0;
@@ -13,7 +24,7 @@ static bool isMenuScreen(int mode) {
   return mode >= 0 && mode <= 5;
 }
 
-// G = (różnica ADC) przeliczona na mV, potem / mV/G
+#if USE_GAUSS_MONITOR
 static float gaussFromAdcDelta(int32_t deltaAdc) {
   float deltaMv =
       ((float)deltaAdc * HALL_ADC_REF_V / (float)HALL_ADC_MAX) * 1000.0f;
@@ -33,6 +44,7 @@ static void refreshGaussValue() {
   int raw = readAdcFiltered();
   gaussValue_ = gaussFromAdcDelta((int32_t)raw - gaussBaselineAdc_);
 }
+#endif
 
 void gaussBegin() {
 #if USE_GAUSS_MONITOR
