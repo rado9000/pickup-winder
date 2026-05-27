@@ -1,0 +1,101 @@
+================================================================================
+  PICKUP WINDER — KONFIGURACJA SPRZĘTOWA
+  Podzespoły i podłączenie pinów (stan projektu)
+================================================================================
+
+--------------------------------------------------------------------------------
+PODZESPOŁY
+--------------------------------------------------------------------------------
+
+  Mikrokontroler:
+    Raspberry Pi Pico (RP2040)
+
+  Silnik krokowy:
+    17HS4401 (NEMA 17, 1,8°, 200 kroków/obrót)
+
+  Sterownik silnika:
+    MKS TMC2209 V2.0
+
+  Wyświetlacz:
+    LCD HD44780, 20×4 znaków, moduł I2C (backpack PCF8574)
+
+  Enkoder:
+    Enkoder obrotowy z przyciskiem (3 przewody: A, B, SW + masa)
+
+  Czujnik obrotów:
+    A3144 (Hall) — liczenie obrotów wału
+
+  Zasilanie (wg montażu):
+    Zasilacz silnika 24 V → TMC2209 (VM)
+    Zasilanie Pico (USB lub 5 V)
+    Wspólna masa: Pico, TMC, zasilacz 24 V, LCD, enkoder, A3144
+
+  Ustawienia na module TMC2209 (zworki / potencjometr, bez UART w kodzie):
+    Microstep MS1=LOW, MS2=LOW  →  1/8 kroku
+    Prąd: VREF — potencjometr na module
+    Tryb choppera / UART: wg zwork na płytce MKS (R8 itd.)
+
+--------------------------------------------------------------------------------
+MAPOWANIE PINÓW — RASPBERRY PI PICO
+--------------------------------------------------------------------------------
+
+  GPIO   Funkcja              Podłączenie do
+  ----   -------------------  ------------------------------------------
+  GP0    I2C SDA              LCD (backpack I2C)
+  GP1    I2C SCL              LCD (backpack I2C)
+
+  GP2    STEP (PWM)           TMC2209 STEP
+  GP3    DIR                  TMC2209 DIR
+  GP10   EN                   TMC2209 EN
+
+  GP6    Enkoder A            Enkoder (kanał A / CLK)
+  GP7    Enkoder B            Enkoder (kanał B / DT)
+  GP8    Enkoder SW           Enkoder (przycisk)
+
+  GP9    A3144                Wyjście czujnika Hall A3144
+
+  GND    Masa                 TMC GND, LCD GND, enkoder GND, A3144 GND,
+                              zasilacz 24 V (-)
+
+--------------------------------------------------------------------------------
+LCD I2C
+--------------------------------------------------------------------------------
+
+  Adres I2C:     0x27
+  Rozdzielczość: 20 kolumn × 4 wiersze
+  SDA:           GP0
+  SCL:           GP1
+
+--------------------------------------------------------------------------------
+TMC2209 — SYGNAŁY Z PICO
+--------------------------------------------------------------------------------
+
+  Pico GP2   →  TMC STEP
+  Pico GP3   →  TMC DIR
+  Pico GP10  →  TMC EN
+  Pico GND   →  TMC GND
+  24 V (+)   →  TMC VM
+  24 V (-)   →  TMC GND (wspólna masa z Pico)
+
+  UART (nieużywane w obecnym firmware):
+  GP4 — potencjalnie TX do PDN_UART (nie podłączone w wersji STEP/DIR)
+  GP5 — potencjalnie RX (nie podłączone w wersji STEP/DIR)
+
+--------------------------------------------------------------------------------
+LOGIKA PINÓW (elektryka)
+--------------------------------------------------------------------------------
+
+  EN (GP10):     LOW = sterownik włączony, HIGH = wyłączony
+  DIR (GP3):     HIGH = kierunek CW (DIR_CW_LEVEL)
+  Enkoder A/B:   INPUT_PULLUP
+  Enkoder SW:    INPUT_PULLUP, LOW = wciśnięty
+  A3144 (GP9):   INPUT_PULLUP, przerwanie na zboczu FALLING
+
+--------------------------------------------------------------------------------
+MICROSTEP (sprzęt + liczba kroków na obrót w oprogramowaniu)
+--------------------------------------------------------------------------------
+
+  MS1=LOW, MS2=LOW na TMC  →  1/8 microstep
+  Kroki na obrót w UI:     1600 (= 200 × 8)
+
+================================================================================
