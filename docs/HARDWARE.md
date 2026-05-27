@@ -1,57 +1,60 @@
 # Pickup winder – 17HS4401 + MKS TMC2209 V2.0
 
-## Zasilanie i mechanika
+## Zworka R8 / tryb UART (MKS V2.0)
 
-| | |
-|---|---|
-| **VM (silnik)** | **24 V** zalecane (12 V = słaby moment przy 500–1000 RPM) |
-| **VDD (logika)** | 3,3 V (Pico) — moduł MKS ma regulator |
-| **Microstep** | **1/8** przez UART (`TMC_MICROSTEPS 8`) — MS1/MS2 mogą być ignorowane gdy UART OK |
-| **Prąd** | `TMC_RUN_CURRENT_MA` 1100 mA (17HS4401, 1,5 Ω); VREF nieużywany gdy UART steruje prądem |
+Na module MKS **zworka przy R8 / UART** decyduje, czy PDN_UART jest połączony z linią sterującą:
 
-## UART – okablowanie Pico → MKS TMC2209 V2.0
-
-Tryb UART na module MKS (mostek/jumper **UART** według instrukcji MKS).
-
-| TMC2209 | Pico | Uwagi |
+| Tryb | Zworka R8 | UART w firmware |
 | --- | --- | --- |
-| **PDN_UART** | **GP5 (RX)** | bezpośrednio |
-| **PDN_UART** | **GP4 (TX)** | przez rezystor **1 kΩ** |
-| **GND** | **GND** | wspólna masa |
-| STEP | GP2 | bez zmian |
-| DIR | GP3 | bez zmian |
-| EN | GP10 | bez zmian |
+| **UART** (zalecane tu) | **Zworka ZAMKNIĘTA** (wg instrukcji MKS) | Tak — konfiguracja **raz** przy starcie |
+| STEP/DIR only | Często **rozwarta** | `USE_TMC2209_UART 0` |
 
-Adres drivera: `TMC_DRIVER_ADDRESS` (domyślnie **0** — zgodnie z MS1/MS2 na module).
+Zła zworka / długi przewód UART → losowe stopki, „cykanie”, gubienie kroków przy wysokich RPM.
 
-Przy starcie na LCD: **„TMC2209 UART OK”** lub **„TMC UART: check”** (brak połączenia / zły adres).
+**Przewód UART:** krótki, wspólna masa, TX przez **1 kΩ** do PDN_UART, RX bezpośrednio (GP4/GP5).
 
-## Co robi firmware (TMC2209)
+## Strategia firmware (stabilne 1000+ RPM)
 
-| Funkcja | Opis |
+1. **UART tylko w `setup()`** — `tmc2209ConfigureOnce()`, **zero** UART w `loop()` / podczas nawijania.
+2. Potem tylko **STEP/DIR/EN** (FastAccelStepper na PIO).
+3. Ustawienia TMC dla wysokich obrotów:
+   - `en_spreadCycle(true)` — SpreadCycle (moment przy 500–1000 RPM)
+   - `intpol(false)` — prawdziwe **1/8**, bez interpolacji do 256
+   - `pwm_autoscale(false)`
+
+## Okablowanie Pico
+
+| TMC2209 | Pico |
 | --- | --- |
-| **StealthChop2** | Nisko: cicho, płynnie (do ~450 RPM) |
-| **SpreadCycle** | Automatycznie powyżej progu (`TPWMTHRS`) — stabilniej przy wysokich RPM |
-| **Interpolacja** | 1/8 → 256 microstepów (płynniejszy ruch) |
-| **Prąd** | Wyższy przy 500+ / 800+ RPM (`TMC_RUN_CURRENT_*`) |
-| **STEP** | FastAccelStepper (PIO), jedna rampa w bibliotece |
+| PDN_UART | GP5 RX + GP4 TX (1 kΩ) |
+| STEP / DIR / EN | GP2 / GP3 / GP10 |
+| VM | **24 V** silnika |
+| GND | wspólna |
 
-Próg Stealth→Spread: `TMC_STEALTH_TO_SPREAD_RPM` (domyślnie **450**).
+## Zasilanie
+
+- **24 V** na silnik — przy 12 V przy 500–1000 RPM często buczenie i stop.
+- Prąd z UART: `TMC_RUN_CURRENT_MA` (domyślnie 1200 mA) — bez kręcenia VREF.
 
 ## STEP / rampa
 
-- **Nie** mieszaj własnej rampy w `loop()` z FAS — tylko `setSpeedInHz` + `setAcceleration` + `runForward()` przy starcie.
-- LCD odświeżane co **250 ms** w nawijaniu.
+- FastAccelStepper: **jedna** rampa (`setAcceleration` + `setSpeedInHz` + `runForward()` przy starcie).
+- LCD co **250 ms** — nie blokuje STEP.
 
-## Dostrajanie (`src/config.h`)
+## LCD przy starcie
+
+- **„TMC cfg OK Spread”** — UART OK, SpreadCycle, bez intpol.
+- **„TMC UART: R8/wire”** — brak komunikacji (zworka, adres, przewód).
+
+## `config.h`
 
 | Stała | Domyślnie |
 | --- | --- |
-| `TMC_RUN_CURRENT_MA` | 1100 |
-| `TMC_STEALTH_TO_SPREAD_RPM` | 450 |
-| `FAS_ACCEL_DEFAULT` | 8000 |
-| `FAS_ACCEL_HIGH_RPM` | 5000 |
-| `USE_TMC2209_UART` | 1 (0 = tylko Step/Dir jak dawniej) |
+| `USE_TMC2209_UART` | 1 |
+| `TMC_EN_SPREADCYCLE` | 1 |
+| `TMC_USE_INTERPOLATION` | 0 |
+| `TMC_PWM_AUTOSCALE` | 0 |
+| `MICROSTEP` | 8 |
 
 ## Kompilacja
 

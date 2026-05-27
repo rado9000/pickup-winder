@@ -2,7 +2,7 @@
 
 #include <Arduino.h>
 
-bool tmc2209Begin();
+// UART tylko raz w setup() — podczas nawijania zero komunikacji (stabilny STEP).
+bool tmc2209ConfigureOnce();
+
 bool tmc2209Ready();
-void tmc2209ApplyWindingProfile(int targetRpm);
-void tmc2209Service(uint32_t nowMs);

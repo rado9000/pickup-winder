@@ -542,9 +542,9 @@ void setup() {
 #if USE_TMC2209_UART
   lcd.setCursor(0, 3);
   if (tmc2209Ready()) {
-    printPadded("TMC2209 UART OK");
+    printPadded("TMC cfg OK Spread");
   } else {
-    printPadded("TMC UART: check");
+    printPadded("TMC UART: R8/wire");
   }
   delay(800);
 #endif
