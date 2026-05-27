@@ -8,7 +8,6 @@
 #include "gauss_monitor.h"
 #include "motor_driver.h"
 #include "presets_store.h"
-#include "tmc2209_driver.h"
 
 LiquidCrystal_I2C lcd(LCD_I2C_ADDRESS, LCD_COLS, LCD_ROWS);
 
@@ -539,16 +538,6 @@ void setup() {
   motorDriverBegin();
   motorEnable(false);
 
-#if USE_TMC2209_UART
-  lcd.setCursor(0, 3);
-  if (tmc2209Ready()) {
-    printPadded("TMC cfg OK Spread");
-  } else {
-    printPadded("TMC UART: R8/wire");
-  }
-  delay(800);
-#endif
-
   targetTurns = 1000;
   targetRpm = 300;
   syncDigitsFromTargets();
@@ -558,11 +547,27 @@ void setup() {
   attachInterrupt(digitalPinToInterrupt(ENC_A_PIN), handleEncoderInterrupt, CHANGE);
   attachInterrupt(digitalPinToInterrupt(ENC_B_PIN), handleEncoderInterrupt, CHANGE);
 
-  delay(200);
   drawManualScreen();
 }
 
+#if USE_TMC2209_UART
+static bool tmcUartPending = true;
+#endif
+
 void loop() {
+#if USE_TMC2209_UART
+  if (tmcUartPending) {
+    tmcUartPending = false;
+    if (tmc2209ConfigureOnce()) {
+      lcd.setCursor(0, 3);
+      printPadded("TMC cfg OK Spread");
+    } else {
+      lcd.setCursor(0, 3);
+      printPadded("TMC: STEP/DIR OK");
+    }
+  }
+#endif
+
   ButtonEvent buttonEvent = readButton();
   unsigned long nowMs = millis();
   int delta = readEncoderDetent();

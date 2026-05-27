@@ -86,10 +86,6 @@ void motorDriverBegin() {
   digitalWrite(STEP_PIN, LOW);
   digitalWrite(EN_PIN, HIGH);
 
-#if USE_TMC2209_UART
-  (void)tmc2209ConfigureOnce();
-#endif
-
   fasEngine.init();
   fasStepper = fasEngine.stepperConnectToPin(STEP_PIN);
   if (!fasStepper) {
@@ -147,6 +143,15 @@ void motorStartWinding(int startRpm, int targetRpm, bool preserveSteps) {
   menuRequested_ = false;
 
   motorEnable(true);
+
+#if USE_TMC2209_UART
+  static bool tmcUartTried = false;
+  if (!tmcUartTried) {
+    tmcUartTried = true;
+    (void)tmc2209ConfigureOnce();
+  }
+#endif
+
   configureFasForTarget(targetRpm);
 
   uint32_t targetHz = rpmToStepHz(targetRpm);

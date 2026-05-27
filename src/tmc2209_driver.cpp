@@ -80,7 +80,8 @@ bool tmc2209ConfigureOnce() {
 
   tmcDriver->begin();
 
-  if (tmcDriver->version() != 0x21) {
+  uint8_t ver = tmcDriver->version();
+  if (ver != 0x21) {
     delete tmcDriver;
     tmcDriver = nullptr;
     return false;

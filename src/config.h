@@ -12,7 +12,8 @@
 #define HALL_ADC_PIN 26
 
 // TMC2209 UART (MKS V2.0): PDN_UART -> Pico RX (GP5), Pico TX (GP4) przez 1k do PDN_UART
-#define USE_TMC2209_UART 1
+// 1 = konfiguracja TMC przez UART (wymaga zworki R8 + przewodu). 0 = od razu dziala menu.
+#define USE_TMC2209_UART 0
 #define TMC_UART_TX_PIN 4
 #define TMC_UART_RX_PIN 5
 #define TMC_UART_BAUD 115200
