@@ -23,13 +23,12 @@
 #define MIN_RPM 1
 #define MAX_RPM 1500
 
-// Rampa reczna: +10 RPM co MOTOR_RPM_RAMP_INTERVAL_MS (bez ciaglego FAS linear ramp).
+// Rampa: +10 RPM co MOTOR_RPM_RAMP_INTERVAL_MS (timer Pico, bez FastAccelStepper).
 #define MOTOR_RPM_RAMP_STEP 10
-#define MOTOR_RPM_RAMP_INTERVAL_MS 350
+#define MOTOR_RPM_RAMP_INTERVAL_MS 400
 #define MOTOR_RPM_RAMP_START 10
-// Przyspieszenie miedzy kolejnymi progami 10 RPM (kroki/s^2).
-#define MOTOR_ACCEL_STEPS_S2 2200
-#define MOTOR_DIR_SETUP_US 8
+#define MOTOR_STEP_PULSE_US 3
+#define MOTOR_MIN_STEP_INTERVAL_US 22
 
 #define USE_TMC2209_UART 0
 #define TMC_UART_TX_PIN 4

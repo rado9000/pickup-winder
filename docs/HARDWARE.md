@@ -1,42 +1,32 @@
 # Pickup winder – hardware
 
-## Wibracje ok. 400–700 RPM (np. 500 RPM)
+## Napęd krokowy (bez FastAccelStepper)
 
-Częsta przyczyna: **TMC2209 w StealthChop** — przy średnich obrotach silnik „buczy” i drży mimo poprawnych kroków.
+STEP z **timera RP2040** (`repeating_timer`): stała częstotliwość impulsów dla danego RPM, bez biblioteki FAS.
 
-**Co zrobić (wybierz jedno):**
-
-1. **UART** (zalecane w firmware): `USE_TMC2209_UART 1` w `config.h`, przewód GP4/GP5, zworka R8. Przy **pierwszym** nawijaniu ustawi SpreadCycle (nie w menu — bez freeze).
-2. **Bez UART:** na MKS TMC2209 włącz **SpreadCycle** jumperem / trybem standalone (wg instrukcji modułu), nie StealthChop.
-3. **Microstep 1/16** na module (MS) + w `config.h` ustaw `MICROSTEP 16` — często mniej drgań niż 1/8 przy tym samym RPM.
-4. **VREF / prąd:** za niski prąd = wibracje pod obciążeniem; typowo ~1–1,2 A na cewkę (VREF wg MKS).
-
-## Rampa prędkości (firmware)
-
-Nie ma ciągłych zmian co 1 RPM. Start od **10 RPM**, potem co **350 ms** +**10 RPM** aż do celu (`MOTOR_RPM_RAMP_STEP`, `MOTOR_RPM_RAMP_INTERVAL_MS` w `config.h`). Między progami FAS płynnie dojeżdża (`applySpeedAcceleration`).
-
-## Okablowanie Pico → TMC2209
-
-| Sygnał | GPIO |
-| --- | --- |
-| STEP | GP2 |
-| DIR | GP3 |
-| EN | GP10 |
-| UART TX / RX | GP4 / GP5 (opcjonalnie) |
-
-24 V na silnik, wspólna masa.
+Rampa: start **10 RPM**, co **400 ms** +**10 RPM** do celu. Zmiana RPM = nowy okres timera (skok co 10 obr/min, nie co 1).
 
 | Stała | Domyślnie |
 | --- | --- |
 | `MOTOR_RPM_RAMP_STEP` | 10 |
-| `MOTOR_RPM_RAMP_INTERVAL_MS` | 350 |
-| `MOTOR_ACCEL_STEPS_S2` | 2200 |
+| `MOTOR_RPM_RAMP_INTERVAL_MS` | 400 |
 | `MAX_RPM` | 1500 |
 
-## Kompilacja
+## TMC2209 / wibracje
+
+SpreadCycle na module (jumper) lub `USE_TMC2209_UART 1` (GP4/GP5, zworka R8). StealthChop często buczy ok. 500 RPM.
+
+## Pico → TMC
+
+| STEP / DIR / EN | GP2 / GP3 / GP10 |
+| UART (opcja) | GP4 / GP5 |
+
+24 V silnik, masa wspólna, MS1=MS2=LOW → 1/8 (`MICROSTEP 8`).
+
+## Build
 
 ```bash
 pio run -e pico
 ```
 
-Wgraj `.pio/build/pico/firmware.uf2`.
+`.pio/build/pico/firmware.uf2`

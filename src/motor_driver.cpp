@@ -1,27 +1,23 @@
 #include "motor_driver.h"
 #include "config.h"
 
-#include <FastAccelStepper.h>
+#include <hardware/gpio.h>
+#include <pico/stdlib.h>
 
 #if USE_TMC2209_UART
 #include "tmc2209_driver.h"
 #endif
 
-static FastAccelStepperEngine fasEngine;
-static FastAccelStepper *fasStepper = nullptr;
 static bool directionCW_ = true;
+static bool motorRunning_ = false;
+static struct repeating_timer stepTimer_;
+static bool stepTimerLive_ = false;
 
 static int windTargetRpm_ = 0;
 static int windCurrentRpm_ = 0;
 static bool windRamping_ = false;
 static uint32_t windLastStepMs_ = 0;
-
-static uint32_t rpmToMilliHz(int rpm) {
-  if (rpm < MIN_RPM) {
-    rpm = MIN_RPM;
-  }
-  return (uint32_t)lroundf((rpm / 60.0f) * (float)STEPS_PER_REV * 1000.0f);
-}
+static volatile long stepCount_ = 0;
 
 static int rampStartRpmForTarget(int targetRpm) {
   int start = MOTOR_RPM_RAMP_START;
@@ -31,49 +27,64 @@ static int rampStartRpmForTarget(int targetRpm) {
   return start;
 }
 
-static void applyFasAccel() {
-  fasStepper->setAcceleration(MOTOR_ACCEL_STEPS_S2);
-  fasStepper->setLinearAcceleration(0);
+static uint32_t stepIntervalUsForRpm(int rpm) {
+  if (rpm < MIN_RPM) {
+    rpm = MIN_RPM;
+  }
+  uint32_t us = (uint32_t)(60000000UL / ((uint32_t)rpm * (uint32_t)STEPS_PER_REV));
+  if (us < MOTOR_MIN_STEP_INTERVAL_US) {
+    us = MOTOR_MIN_STEP_INTERVAL_US;
+  }
+  return us;
 }
 
-static void setRunSpeedRpm(int rpm) {
-  fasStepper->setSpeedInMilliHz(rpmToMilliHz(rpm));
-  fasStepper->applySpeedAcceleration();
+static bool stepTimerHandler(struct repeating_timer *rt) {
+  (void)rt;
+  gpio_put(STEP_PIN, 1);
+  busy_wait_us(MOTOR_STEP_PULSE_US);
+  gpio_put(STEP_PIN, 0);
+  stepCount_++;
+  return true;
+}
+
+static void stopStepTimer() {
+  if (stepTimerLive_) {
+    cancel_repeating_timer(&stepTimer_);
+    stepTimerLive_ = false;
+  }
+}
+
+static void applyStepRateRpm(int rpm) {
+  stopStepTimer();
+  if (!motorRunning_) {
+    return;
+  }
+  uint32_t intervalUs = stepIntervalUsForRpm(rpm);
+  if (add_repeating_timer_us(-(int64_t)intervalUs, stepTimerHandler, nullptr,
+                             &stepTimer_)) {
+    stepTimerLive_ = true;
+  }
 }
 
 void motorDriverBegin() {
-  pinMode(STEP_PIN, OUTPUT);
-  pinMode(DIR_PIN, OUTPUT);
-  pinMode(EN_PIN, OUTPUT);
-  digitalWrite(STEP_PIN, LOW);
-  digitalWrite(EN_PIN, HIGH);
-
-  fasEngine.init();
-  fasStepper = fasEngine.stepperConnectToPin(STEP_PIN);
-  if (!fasStepper) {
-    return;
-  }
-
-  fasStepper->setDirectionPin(DIR_PIN, DIR_CW_LEVEL == HIGH, MOTOR_DIR_SETUP_US);
-  fasStepper->setEnablePin(EN_PIN, true);
-  fasStepper->setAutoEnable(false);
-  applyFasAccel();
+  gpio_init(STEP_PIN);
+  gpio_init(DIR_PIN);
+  gpio_init(EN_PIN);
+  gpio_set_dir(STEP_PIN, GPIO_OUT);
+  gpio_set_dir(DIR_PIN, GPIO_OUT);
+  gpio_set_dir(EN_PIN, GPIO_OUT);
+  gpio_put(STEP_PIN, 0);
+  gpio_put(EN_PIN, 1);
+  motorSetDirection(true);
 }
 
 void motorSetDirection(bool cw) {
   directionCW_ = cw;
+  gpio_put(DIR_PIN, (cw == DIR_CW_LEVEL) ? 1 : 0);
 }
 
 void motorEnable(bool on) {
-  if (!fasStepper) {
-    digitalWrite(EN_PIN, on ? LOW : HIGH);
-    return;
-  }
-  if (on) {
-    fasStepper->enableOutputs();
-  } else {
-    fasStepper->disableOutputs();
-  }
+  gpio_put(EN_PIN, on ? 0 : 1);
 }
 
 bool motorDirectionCW() {
@@ -81,9 +92,6 @@ bool motorDirectionCW() {
 }
 
 void motorStartWinding(int targetRpm) {
-  if (!fasStepper) {
-    return;
-  }
   if (targetRpm < MIN_RPM) {
     targetRpm = MIN_RPM;
   } else if (targetRpm > MAX_RPM) {
@@ -94,30 +102,21 @@ void motorStartWinding(int targetRpm) {
   (void)tmc2209ApplySpreadCycleOnce();
 #endif
 
-  if (fasStepper->isRunning()) {
-    fasStepper->forceStop();
-  }
-
-  fasStepper->setCurrentPosition(0);
-  applyFasAccel();
+  motorStopImmediate();
 
   windTargetRpm_ = targetRpm;
   windCurrentRpm_ = rampStartRpmForTarget(targetRpm);
   windRamping_ = true;
   windLastStepMs_ = millis();
+  stepCount_ = 0;
 
   motorEnable(true);
-
-  setRunSpeedRpm(windCurrentRpm_);
-  if (directionCW_) {
-    fasStepper->runForward();
-  } else {
-    fasStepper->runBackward();
-  }
+  motorRunning_ = true;
+  applyStepRateRpm(windCurrentRpm_);
 }
 
 void motorUpdate() {
-  if (!fasStepper || !windRamping_) {
+  if (!motorRunning_ || !windRamping_) {
     return;
   }
   if (windCurrentRpm_ >= windTargetRpm_) {
@@ -135,40 +134,28 @@ void motorUpdate() {
     windCurrentRpm_ = windTargetRpm_;
   }
 
-  setRunSpeedRpm(windCurrentRpm_);
+  applyStepRateRpm(windCurrentRpm_);
 }
 
 void motorStopImmediate() {
   windRamping_ = false;
-  if (!fasStepper) {
-    return;
-  }
-  if (fasStepper->isRunning()) {
-    fasStepper->forceStop();
-  }
+  motorRunning_ = false;
+  stopStepTimer();
+  gpio_put(STEP_PIN, 0);
 }
 
 void motorSingleStep(bool cw) {
-  if (!fasStepper) {
-    return;
-  }
-  directionCW_ = cw;
-  if (cw) {
-    fasStepper->forwardStep(true);
-  } else {
-    fasStepper->backwardStep(true);
-  }
+  motorSetDirection(cw);
+  gpio_put(STEP_PIN, 1);
+  busy_wait_us(MOTOR_STEP_PULSE_US);
+  gpio_put(STEP_PIN, 0);
+  stepCount_++;
 }
 
 void motorResetStepAccumulator() {
-  if (fasStepper) {
-    fasStepper->setCurrentPosition(0);
-  }
+  stepCount_ = 0;
 }
 
 long motorCurrentSteps() {
-  if (!fasStepper) {
-    return 0;
-  }
-  return fasStepper->getCurrentPosition();
+  return stepCount_;
 }
