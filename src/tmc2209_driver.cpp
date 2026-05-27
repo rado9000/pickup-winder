@@ -1,14 +1,48 @@
 #include "tmc2209_driver.h"
 #include "config.h"
 
-#if USE_TMC2209_UART
+#if USE_TMC2209_UART || TMC_UART_BOOT_PROBE
 
 #include <HardwareSerial.h>
 #include <TMCStepper.h>
 
+#if USE_TMC2209_UART
 static TMC2209Stepper *tmcDriver = nullptr;
 static bool tmcReady_ = false;
 static bool tmcConfigured_ = false;
+#endif
+
+static void tmcUartBeginPins() {
+  Serial1.setRX(TMC_UART_RX_PIN);
+  Serial1.setTX(TMC_UART_TX_PIN);
+  Serial1.begin(TMC_UART_BAUD);
+  delay(50);
+}
+
+static bool tmcVersionLooksValid(uint8_t ver) {
+  return ver != 0 && ver != 255;
+}
+
+int tmc2209ProbeVersion() {
+  tmcUartBeginPins();
+
+  TMC2209Stepper driver(&Serial1, TMC_R_SENSE, TMC_DRIVER_ADDRESS);
+  driver.begin();
+
+  uint8_t ver = driver.version();
+#if TMC_UART_USB_DEBUG
+  Serial.begin(115200);
+  delay(100);
+  Serial.print(F("TMC2209 version=0x"));
+  Serial.println(ver, HEX);
+#endif
+  if (!tmcVersionLooksValid(ver)) {
+    return -1;
+  }
+  return (int)ver;
+}
+
+#if USE_TMC2209_UART
 
 static void applyHighRpmDriverProfile() {
   if (!tmcDriver) {
@@ -63,10 +97,10 @@ bool tmc2209ConfigureOnce() {
   tmcConfigured_ = true;
   tmcReady_ = false;
 
-  Serial1.setRX(TMC_UART_RX_PIN);
-  Serial1.setTX(TMC_UART_TX_PIN);
-  Serial1.begin(TMC_UART_BAUD);
-  delay(50);
+  int ver = tmc2209ProbeVersion();
+  if (ver != TMC_VERSION_OK) {
+    return false;
+  }
 
   if (tmcDriver != nullptr) {
     delete tmcDriver;
@@ -79,14 +113,6 @@ bool tmc2209ConfigureOnce() {
   }
 
   tmcDriver->begin();
-
-  uint8_t ver = tmcDriver->version();
-  if (ver != 0x21) {
-    delete tmcDriver;
-    tmcDriver = nullptr;
-    return false;
-  }
-
   applyHighRpmDriverProfile();
   tmcReady_ = true;
   return true;
@@ -97,6 +123,22 @@ bool tmc2209Ready() {
 }
 
 #else
+
+bool tmc2209ConfigureOnce() {
+  return false;
+}
+
+bool tmc2209Ready() {
+  return false;
+}
+
+#endif
+
+#else
+
+int tmc2209ProbeVersion() {
+  return -1;
+}
 
 bool tmc2209ConfigureOnce() {
   return false;

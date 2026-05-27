@@ -15,7 +15,7 @@ Zła zworka / długi przewód UART → losowe stopki, „cykanie”, gubienie kr
 
 ## Strategia firmware (stabilne 1000+ RPM)
 
-1. **UART tylko w `setup()`** — `tmc2209ConfigureOnce()`, **zero** UART w `loop()` / podczas nawijania.
+1. **UART tylko poza nawijaniem** — `tmc2209ConfigureOnce()` przy pierwszym starcie nawijania (gdy `USE_TMC2209_UART=1`), **zero** UART w trakcie jazdy.
 2. Potem tylko **STEP/DIR/EN** (FastAccelStepper na PIO).
 3. Ustawienia TMC dla wysokich obrotów:
    - `en_spreadCycle(true)` — SpreadCycle (moment przy 500–1000 RPM)
@@ -41,16 +41,45 @@ Zła zworka / długi przewód UART → losowe stopki, „cykanie”, gubienie kr
 - FastAccelStepper: **jedna** rampa (`setAcceleration` + `setSpeedInHz` + `runForward()` przy starcie).
 - LCD co **250 ms** — nie blokuje STEP.
 
-## LCD przy starcie
+## Test UART (czy działa)
 
-- **„TMC cfg OK Spread”** — UART OK, SpreadCycle, bez intpol.
-- **„TMC UART: R8/wire”** — brak komunikacji (zworka, adres, przewód).
+Najprościej: odczyt **`driver.version()`** po `begin()` na UART.
+
+| Wartość | Znaczenie |
+| --- | --- |
+| **0x21** | UART OK (typowe dla TMC2209) |
+| **0**, **255** | Zły pin, brak masy, zworka R8, UART źle ustawiony |
+
+Na **RP2040** przed `Serial1.begin()` trzeba ustawić piny (w Arduino Uno często nie trzeba):
+
+```cpp
+Serial1.setTX(4);
+Serial1.setRX(5);
+Serial1.begin(115200);
+```
+
+W tym projekcie robi to `tmc2209ProbeVersion()` / `tmc2209ConfigureOnce()` w `src/tmc2209_driver.cpp`.
+
+### Firmware
+
+| `TMC_UART_BOOT_PROBE` | Po starcie na LCD (linia 3): szybki test bez blokowania menu |
+| `USE_TMC2209_UART` | 1 = pełna konfiguracja SpreadCycle przy **pierwszym** nawijaniu |
+| `TMC_UART_USB_DEBUG` | 1 = dodatkowo `Serial.println(ver, HEX)` na USB |
+
+Gdy na LCD widzisz **„TMC UART OK 0x21”**, możesz ustawić `USE_TMC2209_UART` na `1` i przebudować.
+
+## LCD przy starcie (`TMC_UART_BOOT_PROBE`)
+
+- **„TMC UART OK 0x21”** — komunikacja UART działa.
+- **„TMC UART: 0/255?”** — brak sensownej odpowiedzi (zworka R8, przewód, masa).
+- **„TMC UART 0xNN”** — inna wartość niż 0x21 (adres MS, uszkodzony moduł).
 
 ## `config.h`
 
 | Stała | Domyślnie |
 | --- | --- |
-| `USE_TMC2209_UART` | 1 |
+| `USE_TMC2209_UART` | 0 (menu od razu; włącz po teście 0x21) |
+| `TMC_UART_BOOT_PROBE` | 1 |
 | `TMC_EN_SPREADCYCLE` | 1 |
 | `TMC_USE_INTERPOLATION` | 0 |
 | `TMC_PWM_AUTOSCALE` | 0 |

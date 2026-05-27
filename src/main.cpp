@@ -8,6 +8,7 @@
 #include "gauss_monitor.h"
 #include "motor_driver.h"
 #include "presets_store.h"
+#include "tmc2209_driver.h"
 
 LiquidCrystal_I2C lcd(LCD_I2C_ADDRESS, LCD_COLS, LCD_ROWS);
 
@@ -550,21 +551,28 @@ void setup() {
   drawManualScreen();
 }
 
-#if USE_TMC2209_UART
-static bool tmcUartPending = true;
+#if TMC_UART_BOOT_PROBE
+static void showTmcUartProbeOnLcd() {
+  int ver = tmc2209ProbeVersion();
+  lcd.setCursor(0, 3);
+  if (ver == TMC_VERSION_OK) {
+    printPadded("TMC UART OK 0x21");
+  } else if (ver < 0) {
+    printPadded("TMC UART: 0/255?");
+  } else {
+    char line[21];
+    snprintf(line, sizeof(line), "TMC UART 0x%02X", ver);
+    printPadded(line);
+  }
+}
 #endif
 
 void loop() {
-#if USE_TMC2209_UART
-  if (tmcUartPending) {
-    tmcUartPending = false;
-    if (tmc2209ConfigureOnce()) {
-      lcd.setCursor(0, 3);
-      printPadded("TMC cfg OK Spread");
-    } else {
-      lcd.setCursor(0, 3);
-      printPadded("TMC: STEP/DIR OK");
-    }
+#if TMC_UART_BOOT_PROBE
+  static bool tmcBootProbeDone = false;
+  if (!tmcBootProbeDone) {
+    tmcBootProbeDone = true;
+    showTmcUartProbeOnLcd();
   }
 #endif
 
