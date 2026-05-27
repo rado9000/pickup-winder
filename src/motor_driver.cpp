@@ -1,93 +1,99 @@
 /*
- * Napęd krokowy: STEP/DIR/EN + jeden timer Pico (50 µs).
- * RPM -> okres kroku; rampa +20 RPM / 600 ms bez restartu timera.
- * Brak FastAccelStepper, brak UART TMC.
+ * STEP = PWM sprzetowy RP2040 (GP2). DIR/EN = GPIO.
+ * Rampa: tylko zmiana czestotliwosci PWM (+2 RPM / 10 ms), bez kasowania timera.
+ * TMC2209: MS + VREF + SpreadCycle na module (bez UART).
  */
 #include "motor_driver.h"
 #include "config.h"
 
+#include <hardware/clocks.h>
 #include <hardware/gpio.h>
+#include <hardware/pwm.h>
 #include <pico/stdlib.h>
 
-static struct repeating_timer tickTimer_;
-static bool tickTimerOn_ = false;
+static uint stepSlice_ = 0;
+static uint stepChannel_ = 0;
+static bool pwmReady_ = false;
 
-static volatile bool run_ = false;
-static volatile uint32_t stepPeriodUs_ = 1000000UL;
-static volatile uint32_t stepAccumUs_ = 0;
-
+static bool motorRunning_ = false;
 static bool dirCw_ = true;
 static int targetRpm_ = 0;
 static int currentRpm_ = 0;
 static bool ramping_ = false;
 static uint32_t lastRampMs_ = 0;
-static volatile long stepCount_ = 0;
+static long stepCount_ = 0;
 
-static uint32_t usPerStep(int rpm) {
-  if (rpm < MIN_RPM) {
-    rpm = MIN_RPM;
-  }
-  uint32_t us = (uint32_t)(60000000UL / ((uint32_t)rpm * (uint32_t)STEPS_PER_REV));
-  if (us < (uint32_t)MOTOR_MIN_STEP_US) {
-    us = (uint32_t)MOTOR_MIN_STEP_US;
-  }
-  return us;
-}
-
-static void pulseStep() {
-  gpio_put(STEP_PIN, 1);
+static void stepPinAsGpioOut() {
+  pwm_set_enabled(stepSlice_, false);
+  gpio_set_function(STEP_PIN, GPIO_FUNC_SIO);
+  gpio_set_dir(STEP_PIN, GPIO_OUT);
   gpio_put(STEP_PIN, 0);
-  stepCount_++;
 }
 
-static bool tickHandler(struct repeating_timer *rt) {
-  (void)rt;
-  if (!run_) {
-    return true;
-  }
-
-  uint32_t period = stepPeriodUs_;
-  stepAccumUs_ += (uint32_t)MOTOR_TICK_US;
-  if (stepAccumUs_ < period) {
-    return true;
-  }
-  stepAccumUs_ -= period;
-
-  pulseStep();
-  return true;
+static void stepPwmBegin() {
+  gpio_set_function(STEP_PIN, GPIO_FUNC_PWM);
+  stepSlice_ = pwm_gpio_to_slice_num(STEP_PIN);
+  stepChannel_ = pwm_gpio_to_channel(STEP_PIN);
+  pwm_set_enabled(stepSlice_, false);
+  pwmReady_ = true;
 }
 
-static void timerStart() {
-  if (tickTimerOn_) {
+static void setStepFrequencyHz(uint32_t hz) {
+  if (!pwmReady_) {
     return;
   }
-  if (add_repeating_timer_us(-(int64_t)MOTOR_TICK_US, tickHandler, nullptr,
-                             &tickTimer_)) {
-    tickTimerOn_ = true;
+  if (hz < 1) {
+    stepPinAsGpioOut();
+    return;
   }
+
+  gpio_set_function(STEP_PIN, GPIO_FUNC_PWM);
+
+  const uint32_t sysHz = clock_get_hz(clk_sys);
+  const uint16_t top = 999;
+  float div = (float)sysHz / ((float)hz * (float)(top + 1));
+  if (div < 1.0f) {
+    div = 1.0f;
+  }
+  if (div > 255.0f) {
+    div = 255.0f;
+  }
+
+  pwm_config cfg = pwm_get_default_config();
+  pwm_config_set_clkdiv(&cfg, div);
+  pwm_config_set_wrap(&cfg, top);
+  pwm_init(stepSlice_, &cfg, true);
+  pwm_set_chan_level(stepSlice_, stepChannel_, top / 2);
+  pwm_set_enabled(stepSlice_, true);
 }
 
-static void timerStop() {
-  if (tickTimerOn_) {
-    cancel_repeating_timer(&tickTimer_);
-    tickTimerOn_ = false;
+static uint32_t rpmToStepHz(int rpm) {
+  if (rpm < 1) {
+    return 0;
   }
+  return ((uint32_t)rpm * (uint32_t)STEPS_PER_REV) / 60U;
 }
 
-static void setRpmNow(int rpm) {
+static void applyStepRateRpm(int rpm) {
   currentRpm_ = rpm;
-  stepPeriodUs_ = usPerStep(rpm);
+  if (!motorRunning_) {
+    setStepFrequencyHz(0);
+    return;
+  }
+  setStepFrequencyHz(rpmToStepHz(rpm));
 }
 
 void motorDriverBegin() {
   gpio_init(STEP_PIN);
   gpio_init(DIR_PIN);
   gpio_init(EN_PIN);
-  gpio_set_dir(STEP_PIN, GPIO_OUT);
   gpio_set_dir(DIR_PIN, GPIO_OUT);
   gpio_set_dir(EN_PIN, GPIO_OUT);
-  gpio_put(STEP_PIN, 0);
   gpio_put(EN_PIN, 1);
+
+  stepPwmBegin();
+  pwm_set_chan_level(stepSlice_, stepChannel_, 0);
+  pwm_set_enabled(stepSlice_, false);
   motorSetDirection(true);
 }
 
@@ -123,16 +129,14 @@ void motorStartWinding(int targetRpm) {
   ramping_ = true;
   lastRampMs_ = millis();
   stepCount_ = 0;
-  stepAccumUs_ = 0;
 
   motorEnable(true);
-  setRpmNow(start);
-  run_ = true;
-  timerStart();
+  motorRunning_ = true;
+  applyStepRateRpm(start);
 }
 
 void motorUpdate() {
-  if (!run_ || !ramping_) {
+  if (!motorRunning_ || !ramping_) {
     return;
   }
   if (currentRpm_ >= targetRpm_) {
@@ -150,22 +154,32 @@ void motorUpdate() {
   if (next > targetRpm_) {
     next = targetRpm_;
   }
-  setRpmNow(next);
+  applyStepRateRpm(next);
 }
 
 void motorStopImmediate() {
-  run_ = false;
+  motorRunning_ = false;
   ramping_ = false;
-  timerStop();
-  gpio_put(STEP_PIN, 0);
+  setStepFrequencyHz(0);
 }
 
 void motorSingleStep(bool cw) {
+  bool wasRunning = motorRunning_;
+  int saveRpm = currentRpm_;
+
+  if (wasRunning) {
+    setStepFrequencyHz(0);
+  }
+
   motorSetDirection(cw);
   gpio_put(STEP_PIN, 1);
   busy_wait_us(MOTOR_STEP_PULSE_US);
   gpio_put(STEP_PIN, 0);
   stepCount_++;
+
+  if (wasRunning) {
+    applyStepRateRpm(saveRpm);
+  }
 }
 
 void motorResetStepAccumulator() {

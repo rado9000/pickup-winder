@@ -14,21 +14,20 @@
 #define LCD_COLS 20
 #define LCD_ROWS 4
 
+// TMC2209 MS1=MS2=LOW => 1/8 na module
 #define MICROSTEP 8
 #define STEPS_PER_REV (200 * MICROSTEP)
 #define COUNT_STEPS_PER_REV STEPS_PER_REV
 #define DIR_CW_LEVEL HIGH
 
 #define MIN_RPM 10
-#define MAX_RPM 1200
+#define MAX_RPM 1500
 
-// Rampa: +20 RPM co 600 ms (tylko zmiana okresu kroku — timer sie nie restartuje).
-#define MOTOR_RPM_RAMP_STEP 20
-#define MOTOR_RPM_RAMP_INTERVAL_MS 600
-#define MOTOR_RPM_RAMP_START 20
-#define MOTOR_TICK_US 50
-#define MOTOR_STEP_PULSE_US 2
-#define MOTOR_MIN_STEP_US 24
+// STEP = PWM RP2040; plytka rampa co 10 ms (bez restartu timera).
+#define MOTOR_RPM_RAMP_START 60
+#define MOTOR_RPM_RAMP_INTERVAL_MS 10
+#define MOTOR_RPM_RAMP_STEP 2
+#define MOTOR_STEP_PULSE_US 3
 
 #define A3144_PULSES_PER_REV 1
 #define A3144_COUNT_ON_FALLING 1

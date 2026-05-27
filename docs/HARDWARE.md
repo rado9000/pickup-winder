@@ -1,22 +1,23 @@
 # Pickup winder
 
-## Napęd (tylko firmware Pico)
+## Napęd
 
-- **STEP** — impulsy z timera co 50 µs; okres kroku z RPM (bez bibliotek stepperów).
-- **Rampa** — start 20 RPM, co 600 ms +20 RPM (np. do 500 RPM ≈ 14 s).
-- **TMC2209** — STEP/DIR/EN + MS1/MS2 na płytce (1/8). **SpreadCycle** ustaw jumperem MKS (StealthChop buczy ~500 RPM).
-- **24 V**, wspólna masa, VREF ~1–1,2 A.
+| Sygnał | Pico | Uwagi |
+| --- | --- | --- |
+| STEP | GP2 | **PWM** sprzętowy (~26–40 kHz przy 1000–1500 RPM, 1/8) |
+| DIR | GP3 | GPIO |
+| EN | GP10 | GPIO, aktywny LOW |
+| GND | wspólna | |
 
-## `config.h`
+**TMC2209 bez UART:** MS1/MS2 = 1/8, **SpreadCycle** (jumper), VREF potencjometrem (~1–1,2 A).
 
-| Stała | Domyślnie |
-| --- | --- |
-| `MOTOR_RPM_RAMP_STEP` | 20 |
-| `MOTOR_RPM_RAMP_INTERVAL_MS` | 600 |
-| `MAX_RPM` | 1200 |
-| `MICROSTEP` | 8 (zgodnie z MS na TMC) |
+## Rampa (firmware)
 
-Wolniej: większy `MOTOR_RPM_RAMP_INTERVAL_MS` (800–1000).
+- Start **60 RPM**
+- Co **10 ms**: **+2 RPM** (tylko nowa częstotliwość PWM — bez przerw w STEP)
+- `MAX_RPM` 1500
+
+Dostrajanie w `config.h`: `MOTOR_RPM_RAMP_STEP`, `MOTOR_RPM_RAMP_INTERVAL_MS`, `MOTOR_RPM_RAMP_START`.
 
 ## Build
 
