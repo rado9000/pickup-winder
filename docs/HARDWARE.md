@@ -11,7 +11,9 @@ Częsta przyczyna: **TMC2209 w StealthChop** — przy średnich obrotach silnik 
 3. **Microstep 1/16** na module (MS) + w `config.h` ustaw `MICROSTEP 16` — często mniej drgań niż 1/8 przy tym samym RPM.
 4. **VREF / prąd:** za niski prąd = wibracje pod obciążeniem; typowo ~1–1,2 A na cewkę (VREF wg MKS).
 
-Firmware: wolniejsza rampa i niższe przyspieszenie do 700 RPM (`MOTOR_ACCEL_LOW_RPM_STEPS_S2`), długi odcinek liniowy (`MOTOR_LINEAR_ACCEL_STEPS`).
+## Rampa prędkości (firmware)
+
+Nie ma ciągłych zmian co 1 RPM. Start od **10 RPM**, potem co **350 ms** +**10 RPM** aż do celu (`MOTOR_RPM_RAMP_STEP`, `MOTOR_RPM_RAMP_INTERVAL_MS` w `config.h`). Między progami FAS płynnie dojeżdża (`applySpeedAcceleration`).
 
 ## Okablowanie Pico → TMC2209
 
@@ -24,13 +26,11 @@ Firmware: wolniejsza rampa i niższe przyspieszenie do 700 RPM (`MOTOR_ACCEL_LOW
 
 24 V na silnik, wspólna masa.
 
-## Rampa (firmware)
-
 | Stała | Domyślnie |
 | --- | --- |
-| `MOTOR_ACCEL_STEPS_S2` | 3500 |
-| `MOTOR_ACCEL_LOW_RPM_STEPS_S2` | 1600 (RPM ≤ 700) |
-| `MOTOR_LINEAR_ACCEL_STEPS` | 3000 |
+| `MOTOR_RPM_RAMP_STEP` | 10 |
+| `MOTOR_RPM_RAMP_INTERVAL_MS` | 350 |
+| `MOTOR_ACCEL_STEPS_S2` | 2200 |
 | `MAX_RPM` | 1500 |
 
 ## Kompilacja

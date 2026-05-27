@@ -15,7 +15,6 @@
 #define LCD_COLS 20
 #define LCD_ROWS 4
 
-// 17HS4401 + TMC2209. MS1=MS2=LOW => 1/8 (dla 1/16 ustaw MS na plytce i MICROSTEP 16).
 #define MICROSTEP 8
 #define STEPS_PER_REV (200 * MICROSTEP)
 #define COUNT_STEPS_PER_REV STEPS_PER_REV
@@ -24,16 +23,14 @@
 #define MIN_RPM 1
 #define MAX_RPM 1500
 
-// Rampa FAS: nizsze przyspieszenie w pasie rezonansu (~400-700 RPM).
-#define MOTOR_ACCEL_STEPS_S2 3500
-#define MOTOR_ACCEL_LOW_RPM_STEPS_S2 1600
-#define MOTOR_LOW_RPM_THRESHOLD 700
-// Dlugi liniowy start rampy (mniej „szarpniecia” na wejsciu w obroty).
-#define MOTOR_LINEAR_ACCEL_STEPS 3000
+// Rampa reczna: +10 RPM co MOTOR_RPM_RAMP_INTERVAL_MS (bez ciaglego FAS linear ramp).
+#define MOTOR_RPM_RAMP_STEP 10
+#define MOTOR_RPM_RAMP_INTERVAL_MS 350
+#define MOTOR_RPM_RAMP_START 10
+// Przyspieszenie miedzy kolejnymi progami 10 RPM (kroki/s^2).
+#define MOTOR_ACCEL_STEPS_S2 2200
 #define MOTOR_DIR_SETUP_US 8
 
-// 1 = SpreadCycle + bez interpolacji (tylko przy PIERWSZYM starcie nawijania, ~50 ms).
-// Wymaga UART (GP4/GP5, zworka R8). 0 = tylko STEP/DIR (na plytce: SpreadCycle z jumperow).
 #define USE_TMC2209_UART 0
 #define TMC_UART_TX_PIN 4
 #define TMC_UART_RX_PIN 5

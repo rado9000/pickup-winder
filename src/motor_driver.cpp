@@ -11,6 +11,11 @@ static FastAccelStepperEngine fasEngine;
 static FastAccelStepper *fasStepper = nullptr;
 static bool directionCW_ = true;
 
+static int windTargetRpm_ = 0;
+static int windCurrentRpm_ = 0;
+static bool windRamping_ = false;
+static uint32_t windLastStepMs_ = 0;
+
 static uint32_t rpmToMilliHz(int rpm) {
   if (rpm < MIN_RPM) {
     rpm = MIN_RPM;
@@ -18,13 +23,22 @@ static uint32_t rpmToMilliHz(int rpm) {
   return (uint32_t)lroundf((rpm / 60.0f) * (float)STEPS_PER_REV * 1000.0f);
 }
 
-static void applyRampForRpm(int targetRpm) {
-  int32_t accel = MOTOR_ACCEL_STEPS_S2;
-  if (targetRpm <= MOTOR_LOW_RPM_THRESHOLD) {
-    accel = MOTOR_ACCEL_LOW_RPM_STEPS_S2;
+static int rampStartRpmForTarget(int targetRpm) {
+  int start = MOTOR_RPM_RAMP_START;
+  if (targetRpm < start) {
+    return targetRpm;
   }
-  fasStepper->setAcceleration(accel);
-  fasStepper->setLinearAcceleration(MOTOR_LINEAR_ACCEL_STEPS);
+  return start;
+}
+
+static void applyFasAccel() {
+  fasStepper->setAcceleration(MOTOR_ACCEL_STEPS_S2);
+  fasStepper->setLinearAcceleration(0);
+}
+
+static void setRunSpeedRpm(int rpm) {
+  fasStepper->setSpeedInMilliHz(rpmToMilliHz(rpm));
+  fasStepper->applySpeedAcceleration();
 }
 
 void motorDriverBegin() {
@@ -43,7 +57,7 @@ void motorDriverBegin() {
   fasStepper->setDirectionPin(DIR_PIN, DIR_CW_LEVEL == HIGH, MOTOR_DIR_SETUP_US);
   fasStepper->setEnablePin(EN_PIN, true);
   fasStepper->setAutoEnable(false);
-  applyRampForRpm(MAX_RPM);
+  applyFasAccel();
 }
 
 void motorSetDirection(bool cw) {
@@ -85,11 +99,16 @@ void motorStartWinding(int targetRpm) {
   }
 
   fasStepper->setCurrentPosition(0);
-  applyRampForRpm(targetRpm);
+  applyFasAccel();
+
+  windTargetRpm_ = targetRpm;
+  windCurrentRpm_ = rampStartRpmForTarget(targetRpm);
+  windRamping_ = true;
+  windLastStepMs_ = millis();
 
   motorEnable(true);
 
-  fasStepper->setSpeedInMilliHz(rpmToMilliHz(targetRpm));
+  setRunSpeedRpm(windCurrentRpm_);
   if (directionCW_) {
     fasStepper->runForward();
   } else {
@@ -97,9 +116,30 @@ void motorStartWinding(int targetRpm) {
   }
 }
 
-void motorUpdate() {}
+void motorUpdate() {
+  if (!fasStepper || !windRamping_) {
+    return;
+  }
+  if (windCurrentRpm_ >= windTargetRpm_) {
+    return;
+  }
+
+  uint32_t nowMs = millis();
+  if (nowMs - windLastStepMs_ < (uint32_t)MOTOR_RPM_RAMP_INTERVAL_MS) {
+    return;
+  }
+  windLastStepMs_ = nowMs;
+
+  windCurrentRpm_ += MOTOR_RPM_RAMP_STEP;
+  if (windCurrentRpm_ > windTargetRpm_) {
+    windCurrentRpm_ = windTargetRpm_;
+  }
+
+  setRunSpeedRpm(windCurrentRpm_);
+}
 
 void motorStopImmediate() {
+  windRamping_ = false;
   if (!fasStepper) {
     return;
   }
