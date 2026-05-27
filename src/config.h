@@ -16,13 +16,7 @@
 #define LCD_ROWS 4
 
 // Silnik: 17HS4401 NEMA17, 1.8 deg, 200 krokow/obrot (cewka 1.5 Ohm)
-// Kroki na obrót silnika = 200 * MICROSTEP. Musi zgadzać się z MS1/MS2 na module
-// (MS3 na tym module nie jest używany — zostaw LOW).
-// MS1  MS2  => microstep  => MICROSTEP
-// LOW  LOW  => 1/8        => 8   (obecne okablowanie)
-// LOW  HIGH => 1/4        => 4
-// HIGH LOW  => 1/2        => 2
-// HIGH HIGH => 1/16       => 16
+// MS1=LOW MS2=LOW => 1/8 (najlepsza stabilnosc przy 1000+ RPM)
 #define MICROSTEP 8
 #define STEPS_PER_REV (200 * MICROSTEP)
 #define COUNT_STEPS_PER_REV STEPS_PER_REV
@@ -35,18 +29,15 @@
 #define USE_SOFT_START 1
 #define USE_SOFT_STOP 0
 
-// Rampa schodkowa: kazdy prog RPM + postoj (hold) — bez szarpniecia na koncu segmentu
-#define RAMP_LADDER_TABLE \
-  { 50, 100, 150, 200, 250, 300, 350, 400, 450, 500, 600, 700, 800, 900, 1000 }
-#define RAMP_SEG_BASE_MS 2500
-#define RAMP_SEG_MS_PER_RPM 45
-#define RAMP_SEG_MIN_MS 2000
-#define RAMP_SEG_MAX_MS 12000
-#define RAMP_HOLD_MS 2500
-
-// STEP jak w dzialajacym starym softie (analogWriteFreq + niski duty)
-#define STEP_PWM_DUTY 64
-#define PREWIND_PULSE_US 5
+// FastAccelStepper: JEDNA rampa w bibliotece (steps/s^2), bez rampy w petli loop()
+#define FAS_ACCEL_DEFAULT 8000
+#define FAS_ACCEL_MID_RPM 6500
+#define FAS_ACCEL_HIGH_RPM 5000
+#define FAS_ACCEL_MIN 2500
+#define FAS_ACCEL_MAX 12000
+#define FAS_LINEAR_ACCEL_STEPS 800
+#define FAS_DIR_CHANGE_DELAY_US 5
+#define FAS_FORWARD_PLAN_MS 20
 
 #define A3144_PULSES_PER_REV 1
 #define A3144_COUNT_ON_FALLING 1
@@ -54,7 +45,6 @@
 #define A3144_DEBOUNCE_US 800
 #define A3144_MIN_INTERVAL_US ((A3144_PERIOD_US(MAX_RPM_A3144) * 45UL) / 100UL)
 
-// Testowo wyłączone — włącz z powrotem ustawiając na 1
 #define USE_GAUSS_MONITOR 0
 #define HALL_ADC_REF_V 3.3f
 #define HALL_ADC_MAX 4095
@@ -74,6 +64,6 @@
 #define EEPROM_SIZE 1024
 #define LONG_PRESS_MS 800
 #define BLINK_MS 500
-#define WINDING_UI_INTERVAL_MS 200
+#define WINDING_UI_INTERVAL_MS 250
 #define ENCODER_DETENTS_PER_REV 20
 #define PREWIND_STEP_INTERVAL_US 800
