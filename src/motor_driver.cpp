@@ -1,5 +1,6 @@
 #include "motor_driver.h"
 #include "config.h"
+#include "tmc2209_driver.h"
 
 #include <FastAccelStepper.h>
 
@@ -85,6 +86,10 @@ void motorDriverBegin() {
   digitalWrite(STEP_PIN, LOW);
   digitalWrite(EN_PIN, HIGH);
 
+#if USE_TMC2209_UART
+  (void)tmc2209Begin();
+#endif
+
   fasEngine.init();
   fasStepper = fasEngine.stepperConnectToPin(STEP_PIN);
   if (!fasStepper) {
@@ -142,6 +147,11 @@ void motorStartWinding(int startRpm, int targetRpm, bool preserveSteps) {
   menuRequested_ = false;
 
   motorEnable(true);
+#if USE_TMC2209_UART
+  if (tmc2209Ready()) {
+    tmc2209ApplyWindingProfile(targetRpm);
+  }
+#endif
   configureFasForTarget(targetRpm);
 
   uint32_t targetHz = rpmToStepHz(targetRpm);
@@ -171,7 +181,9 @@ void motorRequestStop(bool forCompletion, bool pause, bool toMenu) {
 }
 
 void motorUpdate(uint32_t nowMs) {
-  (void)nowMs;
+#if USE_TMC2209_UART
+  tmc2209Service(nowMs);
+#endif
   if (!fasStepper) {
     return;
   }

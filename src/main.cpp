@@ -8,6 +8,7 @@
 #include "gauss_monitor.h"
 #include "motor_driver.h"
 #include "presets_store.h"
+#include "tmc2209_driver.h"
 
 LiquidCrystal_I2C lcd(LCD_I2C_ADDRESS, LCD_COLS, LCD_ROWS);
 
@@ -537,6 +538,16 @@ void setup() {
   a3144Begin();
   motorDriverBegin();
   motorEnable(false);
+
+#if USE_TMC2209_UART
+  lcd.setCursor(0, 3);
+  if (tmc2209Ready()) {
+    printPadded("TMC2209 UART OK");
+  } else {
+    printPadded("TMC UART: check");
+  }
+  delay(800);
+#endif
 
   targetTurns = 1000;
   targetRpm = 300;
