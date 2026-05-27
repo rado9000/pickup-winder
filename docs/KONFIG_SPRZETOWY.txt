@@ -1,280 +1,101 @@
 ================================================================================
-  PICKUP WINDER — PEŁNA KONFIGURACJA SPRZĘTOWA (nowy projekt od zera)
-  Ostatnia wersja firmware: gałąź cursor/merge-winder-best-9725
-  Data dokumentu: 2026-05-22
+  PICKUP WINDER — KONFIGURACJA SPRZĘTOWA
+  Podzespoły i podłączenie pinów (stan projektu)
 ================================================================================
 
 --------------------------------------------------------------------------------
-1. PLATFORMa PROGRAMOWA
---------------------------------------------------------------------------------
-  MCU .............. Raspberry Pi Pico (RP2040)
-  Framework ........ Arduino (earlephilhower core)
-  Build ............ PlatformIO, env: pico
-  PlatformIO ....... https://github.com/maxgerhardt/platform-raspberrypi.git
-  board ............ pico
-  board_build.core . earlephilhower
-
-  Kompilacja:
-    pio run -e pico
-  Firmware:
-    .pio/build/pico/firmware.uf2
-
-  Biblioteki zewnętrzne (platformio.ini):
-    - LiquidCrystal_I2C (GitHub johnrickman) — LCD I2C
-  Silnik STEP ....... własny kod (PWM RP2040), bez FastAccelStepper / UART TMC
-
-  I2C w setup():
-    Wire.setSDA(0), Wire.setSCL(1)
-    Wire.setClock(100000)    // 100 kHz
-    Wire.setTimeout(10)      // ms
-
---------------------------------------------------------------------------------
-2. ZASILANIE
---------------------------------------------------------------------------------
-  Silnik (VM) ...... 24 V DC (zalecane; 12 V = słabszy moment, buczenie)
-  Logika Pico ...... 5 V (USB) / 3,3 V GPIO
-  LCD I2C .......... zwykle 5 V moduł (VCC), logika I2C często 5 V tolerant
-                     na backpacku — wspólna masa z Pico i TMC obowiązkowa
-  Masa ............. GND Pico = GND TMC2209 = GND zasilacza 24 V
-
---------------------------------------------------------------------------------
-3. SILNIK KROKOWY
---------------------------------------------------------------------------------
-  Model ............ 17HS4401 (NEMA 17)
-  Kąt kroku ....... 1,8° → 200 kroków/obrót (pełny krok)
-  Cewka ............ ~1,5 Ω (sprawdź tabliczkę)
-  Zastosowanie ..... nawijarka cewek przetworników gitarowych
-
---------------------------------------------------------------------------------
-4. STEROWNIK TMC2209 (np. MKS TMC2209 V2.0)
---------------------------------------------------------------------------------
-  Tryb w firmware .. STEP + DIR + EN tylko (USE_TMC2209_UART = 0)
-  UART ............. opcjonalnie GP4/GP5 — w tej wersji WYŁĄCZONE
-
-  Microstep (zworki MS na module):
-    MS1 = LOW, MS2 = LOW  →  1/8 microstep (typowe na MKS)
-    W firmware: MICROSTEP = 8  →  STEPS_PER_REV = 1600
-
-  Tryb pracy (BEZ UART — ustaw na module):
-    - SpreadCycle (jumper / pin SPREAD) — ZALECANE przy 400–1500 RPM
-    - StealthChop przy ~500 RPM często buczy i wibruje
-    - Interpolacja 256: wyłączona na module jeśli jest opcja
-
-  Prąd:
-    - VREF potencjometrem na module (~1,0–1,2 A RMS na cewkę — test)
-    - Bez UART nie ma rms_current() z kodu
-
-  Zworka R8 / UART (MKS):
-    - UART do Pico: zworka R8 ZAMKNIĘTA (wg instrukcji MKS)
-    - Tylko STEP/DIR: UART niepodłączony, zworka często rozwarta
-
-  Okablowanie sygnałów (Pico → TMC):
-    Pico GP2  (STEP)  →  TMC STEP
-    Pico GP3  (DIR)   →  TMC DIR
-    Pico GP10 (EN)    →  TMC EN
-    Pico GND          →  TMC GND
-    24 V              →  TMC VM (zasilacz silnika)
-
-  STEP w firmware:
-    Generowany PWM sprzętowym RP2040 na GP2 (nie timer programowy)
-    Częstotliwość: Hz = (RPM × STEPS_PER_REV) / 60
-    Przy 1000 RPM, 1/8: 26666 Hz STEP
-
---------------------------------------------------------------------------------
-5. MAPOWANIE PINÓW — RASPBERRY PI PICO (GPIO)
---------------------------------------------------------------------------------
-  GPIO | Funkcja              | Kierunek | Uwagi
-  -----|----------------------|----------|----------------------------------
-  GP0  | I2C SDA              | I/O      | LCD 20×4 + backpack PCF8574
-  GP1  | I2C SCL              | I/O      |
-  GP2  | STEP (PWM)           | OUT      | do TMC2209 STEP
-  GP3  | DIR                  | OUT      | do TMC2209 DIR
-  GP6  | Enkoder A (CLK)      | IN PU    | INPUT_PULLUP
-  GP7  | Enkoder B (DT)       | IN PU    |
-  GP8  | Enkoder przycisk SW   | IN PU    | LOW = wciśnięty
-  GP9  | A3144 (licznik obrotów)| IN PU    | przerwanie FALLING
-  GP10 | EN silnika           | OUT      | LOW = sterownik włączony
-  GP26 | Hall ADC (opcjonalnie)| IN      | tylko USE_GAUSS_MONITOR=1
-
-  Nieużywane w tej konfiguracji: GP4, GP5 (UART TMC), GP11–GP25, itd.
-
-  EN logika:
-    HIGH = wyłączony, LOW = włączony (TMC enable active low)
-
-  DIR logika:
-    DIR_CW_LEVEL = HIGH  →  kierunek CW przy HIGH na DIR
-
---------------------------------------------------------------------------------
-6. LCD
---------------------------------------------------------------------------------
-  Typ .............. HD44780, 20 kolumn × 4 wiersze
-  Interfejs ........ I2C (backpack PCF8574)
-  Adres I2C ........ 0x27  (alternatywa: 0x3F — skaner I2C)
-  Piny ............. GP0 SDA, GP1 SCL
-  Stałe:
-    LCD_I2C_ADDRESS = 0x27
-    LCD_COLS = 20
-    LCD_ROWS = 4
-
---------------------------------------------------------------------------------
-7. ENKODER OBROTOWY (UI)
---------------------------------------------------------------------------------
-  Piny ............. GP6 (A), GP7 (B), GP8 (przycisk)
-  Tryb ............. INPUT_PULLUP, przerwania CHANGE na A i B
-  Detale ........... ENCODER_DETENTS_PER_REV = 20
-  Przycisk:
-    LONG_PRESS_MS = 800  → długie = menu / anuluj
-    krótkie = wybór / start
-
---------------------------------------------------------------------------------
-8. CZUJNIK A3144 (LICZNIK OBROTÓW / WARSTW)
---------------------------------------------------------------------------------
-  Pin .............. GP9
-  Impulsy/obrót .... 1 (magnes / obrót wału)
-  A3144_PULSES_PER_REV = 1
-  COUNT_STEPS_PER_REV = 1600  (do przeliczeń wewnętrznych; licznik UI z A3144)
-  Przerwanie ....... FALLING (A3144_COUNT_ON_FALLING = 1)
-  Debounce ......... A3144_DEBOUNCE_US = 800
-  Min. odstęp ..... A3144_MIN_INTERVAL_US = 20000
-
-  Montaż: A3144 + magnes na wałku; kierunek zliczania zależy od DIR silnika
-
---------------------------------------------------------------------------------
-9. OPCJONALNY CZUJNIK HALL (GAUSS) — WYŁĄCZONY
---------------------------------------------------------------------------------
-  USE_GAUSS_MONITOR = 0
-  Pin ADC .......... GP26 (AH49xx / podobny)
-  Gdy włączysz: USE_GAUSS_MONITOR = 1, kalibracja w gauss_monitor.cpp
-
---------------------------------------------------------------------------------
-10. NAPĘD — PARAMETRY FIRMWARE (config.h)
---------------------------------------------------------------------------------
-  MICROSTEP ...................... 8
-  STEPS_PER_REV .................. 1600   (200 × 8)
-  COUNT_STEPS_PER_REV ............ 1600
-
-  MIN_RPM ........................ 10
-  MAX_RPM ........................ 1500
-
-  Rampa (PWM, bez skoków timera):
-    MOTOR_RPM_RAMP_START ......... 60
-    MOTOR_RPM_RAMP_STEP .......... 2      (+2 RPM co krok rampy)
-    MOTOR_RPM_RAMP_INTERVAL_MS ... 10     (co 10 ms)
-    MOTOR_STEP_PULSE_US .......... 3      (tylko prewind / pojedynczy krok)
-
-  Przykład: do 500 RPM od 60 → (500-60)/2 = 220 kroków × 10 ms ≈ 2,2 s
-
---------------------------------------------------------------------------------
-11. UI I PAMIĘĆ (config.h)
---------------------------------------------------------------------------------
-  MAX_TURNS ...................... 99999
-  TURN_DIGITS .................... 5
-  RPM_DIGITS ..................... 4
-  MAX_PRESETS .................... 32
-  PRESET_NAME_LEN ................ 12
-  EEPROM_SIZE .................... 1024 (emulowana na RP2040)
-
-  WINDING_UI_INTERVAL_MS ......... 1000   (odświeżanie LCD w nawijaniu)
-  BLINK_MS ....................... 500
-  PREWIND_STEP_INTERVAL_US ....... 1000
-
---------------------------------------------------------------------------------
-12. PRZEPŁYW UŻYTKOWNIKA (skrót)
---------------------------------------------------------------------------------
-  Start → Manual mode (obroty, RPM, kierunek)
-  Start nawijania → Prewind (ręczne kroki enkoderem) → odliczanie 3…2…1
-  → Nawijanie (A3144 liczy obroty) → Stop / Pauza / Koniec
-
-  Przy starcie właściwego nawijania: reset licznika A3144 (prewind nie wlicza się)
-
---------------------------------------------------------------------------------
-13. SZABLON config.h (kopiuj do nowego projektu)
+PODZESPOŁY
 --------------------------------------------------------------------------------
 
-#pragma once
+  Mikrokontroler:
+    Raspberry Pi Pico (RP2040)
 
-#define I2C_SDA_PIN 0
-#define I2C_SCL_PIN 1
-#define STEP_PIN 2
-#define DIR_PIN 3
-#define ENC_A_PIN 6
-#define ENC_B_PIN 7
-#define ENC_BTN_PIN 8
-#define A3144_PIN 9
-#define EN_PIN 10
+  Silnik krokowy:
+    17HS4401 (NEMA 17, 1,8°, 200 kroków/obrót)
 
-#define LCD_I2C_ADDRESS 0x27
-#define LCD_COLS 20
-#define LCD_ROWS 4
+  Sterownik silnika:
+    MKS TMC2209 V2.0
 
-#define MICROSTEP 8
-#define STEPS_PER_REV (200 * MICROSTEP)
-#define COUNT_STEPS_PER_REV STEPS_PER_REV
-#define DIR_CW_LEVEL HIGH
+  Wyświetlacz:
+    LCD HD44780, 20×4 znaków, moduł I2C (backpack PCF8574)
 
-#define MIN_RPM 10
-#define MAX_RPM 1500
+  Enkoder:
+    Enkoder obrotowy z przyciskiem (3 przewody: A, B, SW + masa)
 
-#define MOTOR_RPM_RAMP_START 60
-#define MOTOR_RPM_RAMP_INTERVAL_MS 10
-#define MOTOR_RPM_RAMP_STEP 2
-#define MOTOR_STEP_PULSE_US 3
+  Czujnik obrotów:
+    A3144 (Hall) — liczenie obrotów wału
 
-#define A3144_PULSES_PER_REV 1
-#define A3144_COUNT_ON_FALLING 1
-#define A3144_DEBOUNCE_US 800
-#define A3144_MIN_INTERVAL_US 20000UL
+  Zasilanie (wg montażu):
+    Zasilacz silnika 24 V → TMC2209 (VM)
+    Zasilanie Pico (USB lub 5 V)
+    Wspólna masa: Pico, TMC, zasilacz 24 V, LCD, enkoder, A3144
 
-#define USE_GAUSS_MONITOR 0
-
-#define MAX_PRESETS 32
-#define MAX_TURNS 99999L
-#define TURN_DIGITS 5
-#define RPM_DIGITS 4
-#define PRESET_NAME_LEN 12
-#define EEPROM_SIZE 1024
-#define LONG_PRESS_MS 800
-#define BLINK_MS 500
-#define WINDING_UI_INTERVAL_MS 1000
-#define ENCODER_DETENTS_PER_REV 20
-#define PREWIND_STEP_INTERVAL_US 1000
+  Ustawienia na module TMC2209 (zworki / potencjometr, bez UART w kodzie):
+    Microstep MS1=LOW, MS2=LOW  →  1/8 kroku
+    Prąd: VREF — potencjometr na module
+    Tryb choppera / UART: wg zwork na płytce MKS (R8 itd.)
 
 --------------------------------------------------------------------------------
-14. SZABLON platformio.ini
+MAPOWANIE PINÓW — RASPBERRY PI PICO
 --------------------------------------------------------------------------------
 
-[env:pico]
-platform = https://github.com/maxgerhardt/platform-raspberrypi.git
-board = pico
-framework = arduino
-board_build.core = earlephilhower
-lib_deps =
-    https://github.com/johnrickman/LiquidCrystal_I2C.git
-monitor_speed = 115200
+  GPIO   Funkcja              Podłączenie do
+  ----   -------------------  ------------------------------------------
+  GP0    I2C SDA              LCD (backpack I2C)
+  GP1    I2C SCL              LCD (backpack I2C)
+
+  GP2    STEP (PWM)           TMC2209 STEP
+  GP3    DIR                  TMC2209 DIR
+  GP10   EN                   TMC2209 EN
+
+  GP6    Enkoder A            Enkoder (kanał A / CLK)
+  GP7    Enkoder B            Enkoder (kanał B / DT)
+  GP8    Enkoder SW           Enkoder (przycisk)
+
+  GP9    A3144                Wyjście czujnika Hall A3144
+
+  GND    Masa                 TMC GND, LCD GND, enkoder GND, A3144 GND,
+                              zasilacz 24 V (-)
 
 --------------------------------------------------------------------------------
-15. CHECKLIST PRZED PIERWSZYM URUCHOMIENIEM
+LCD I2C
 --------------------------------------------------------------------------------
-  [ ] 24 V na TMC, masa wspólna
-  [ ] MS1/MS2 = 1/8 microstep
-  [ ] SpreadCycle na TMC (jumper)
-  [ ] VREF ustawiony (prąd silnika)
-  [ ] STEP→GP2, DIR→GP3, EN→GP10
-  [ ] LCD na GP0/GP1, adres 0x27 lub 0x3F
-  [ ] Enkoder GP6/7/8
-  [ ] A3144 GP9 + magnes
-  [ ] Wgranie firmware.uf2 (przycisk BOOTSEL)
+
+  Adres I2C:     0x27
+  Rozdzielczość: 20 kolumn × 4 wiersze
+  SDA:           GP0
+  SCL:           GP1
 
 --------------------------------------------------------------------------------
-16. DOSTRAJANIE (bez zmiany okablowania)
+TMC2209 — SYGNAŁY Z PICO
 --------------------------------------------------------------------------------
-  Wolniejsza rampa ........ MOTOR_RPM_RAMP_INTERVAL_MS ↑ (np. 20–50)
-                            MOTOR_RPM_RAMP_STEP ↓ (np. 1)
-  Wibracje ~500 RPM ....... SpreadCycle na TMC; test 480/520 RPM
-  Za słaby moment ......... VREF ↑, sprawdź 24 V
-  LCD nie działa .......... skan I2C (0x27 / 0x3F), SDA/SCL, zasilanie 5 V
-  Microstep 1/16 .......... zmiana zwork MS + MICROSTEP 16 + STEPS_PER_REV 3200
 
-================================================================================
-  Koniec pliku — docs/KONFIG_SPRZETOWY.txt
+  Pico GP2   →  TMC STEP
+  Pico GP3   →  TMC DIR
+  Pico GP10  →  TMC EN
+  Pico GND   →  TMC GND
+  24 V (+)   →  TMC VM
+  24 V (-)   →  TMC GND (wspólna masa z Pico)
+
+  UART (nieużywane w obecnym firmware):
+  GP4 — potencjalnie TX do PDN_UART (nie podłączone w wersji STEP/DIR)
+  GP5 — potencjalnie RX (nie podłączone w wersji STEP/DIR)
+
+--------------------------------------------------------------------------------
+LOGIKA PINÓW (elektryka)
+--------------------------------------------------------------------------------
+
+  EN (GP10):     LOW = sterownik włączony, HIGH = wyłączony
+  DIR (GP3):     HIGH = kierunek CW (DIR_CW_LEVEL)
+  Enkoder A/B:   INPUT_PULLUP
+  Enkoder SW:    INPUT_PULLUP, LOW = wciśnięty
+  A3144 (GP9):   INPUT_PULLUP, przerwanie na zboczu FALLING
+
+--------------------------------------------------------------------------------
+MICROSTEP (sprzęt + liczba kroków na obrót w oprogramowaniu)
+--------------------------------------------------------------------------------
+
+  MS1=LOW, MS2=LOW na TMC  →  1/8 microstep
+  Kroki na obrót w UI:     1600 (= 200 × 8)
+
 ================================================================================
