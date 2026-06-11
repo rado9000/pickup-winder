@@ -61,7 +61,7 @@ Manual silnika: [MKS SERVO42&57ES RS485 User Manual V1.0.1](MKS-SERVO42ES-57ES_R
 | --- | --- |
 | VCC | 3.3V |
 | GND | GND |
-| VOUT | GPIO 1 (ADC1) |
+| VOUT | GPIO 13 (ADC2, alt. GPIO 14) |
 
 Kalibracja zera: po ~1.5 s od startu, gdy pole < 25 G przez 0.8 s, czujnik sam ustawia offset
 (nie trzeba trzymać stałego 1.65 V w kodzie). Po zdjęciu magnesu offset jest ponownie

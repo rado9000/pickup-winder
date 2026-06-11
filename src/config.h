@@ -12,7 +12,8 @@
 #define ENCODER_DT_PIN 11
 #define ENCODER_SW_PIN 12
 
-#define GAUSS_ADC_PIN 1
+// AH49HZ3 VOUT — GPIO 13 or 14 (ADC2); 13 recommended (was A3144, now free)
+#define GAUSS_ADC_PIN 13
 
 // --- LCD ---
 #define LCD_I2C_ADDR 0x27
