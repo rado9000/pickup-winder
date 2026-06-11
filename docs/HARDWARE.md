@@ -4,7 +4,7 @@
 
 | Element | Model |
 | --- | --- |
-| MCU | ESP32-S3 DevKitC-1 |
+| MCU | ESP32-S3 DevKitC-1 N16R8 (16 MB / 8 MB PSRAM) |
 | Silnik | Makerbase MKS SERVO42ES NEMA17 (RS485) |
 | Wyświetlacz | LCD 2004A (HD44780, I2C backpack) |
 | Enkoder UI | Rotary encoder z przyciskiem |
@@ -83,9 +83,10 @@ Implementacja: `servo42.cpp` → `readEncoderAddition()`, `rev_counter.cpp`.
 ## Kompilacja
 
 ```bash
-pio run -e esp32-s3-devkitc-1
-pio run -e esp32-s3-devkitc-1 -t upload
+pio run -e esp32-s3-n16r8 -t upload
 ```
+
+Windows: [FLASH_WINDOWS.md](FLASH_WINDOWS.md)
 
 Konfiguracja pinów: `src/config.h`.
 

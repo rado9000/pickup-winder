@@ -16,9 +16,13 @@ Nawijarka do pickupów gitarowych.
 - Dokumentacja hardware: [docs/HARDWARE.md](docs/HARDWARE.md)
 - Manual silnika: [docs/MKS-SERVO42ES-57ES_RS485_User_Manual_V1.0.1.pdf](docs/MKS-SERVO42ES-57ES_RS485_User_Manual_V1.0.1.pdf)
 
+Środowisko PlatformIO: **`esp32-s3-n16r8`** (16 MB flash, 8 MB PSRAM).
+
+**Windows — instrukcja krok po kroku:** [docs/FLASH_WINDOWS.md](docs/FLASH_WINDOWS.md)
+
 ```bash
-pio run -e esp32-s3-devkitc-1
-pio run -e esp32-s3-devkitc-1 -t upload
+pio run -e esp32-s3-n16r8 -t upload
+pio device monitor -b 115200
 ```
 
 Copyright (c) 2026 Radosław Litke / AmpLab
