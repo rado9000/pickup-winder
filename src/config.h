@@ -31,8 +31,14 @@
 #define SERVO42_INIT_ON_BOOT 1
 
 // --- Gauss (AH49HZ3 on ADC) ---
-#define GAUSS_ACTIVATE_G 50.0f
+#define GAUSS_MV_PER_G 2.5f
 #define GAUSS_ADC_SAMPLES 8
+#define GAUSS_ACTIVATE_G 50.0f
+#define GAUSS_WARMUP_MS 1500
+#define GAUSS_CALIB_QUIET_MS 800
+#define GAUSS_CALIB_MAX_G 25.0f
+#define GAUSS_CALIB_SAMPLES 16
+#define GAUSS_REZERO_ON_FIELD_REMOVE 1
 
 // --- Presets ---
 #define PRESET_MAX_COUNT 32

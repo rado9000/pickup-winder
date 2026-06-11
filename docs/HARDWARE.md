@@ -19,7 +19,7 @@ Manual silnika: [MKS SERVO42&57ES RS485 User Manual V1.0.1](MKS-SERVO42ES-57ES_R
 - **Tryb Manual** – edycja zwojów (5 cyfr), RPM (4 cyfry), kierunku CW/CCW
 - **Presets** – zapis do NVS (max 32), long-press = powrót
 - **Nawijanie** – odliczanie 3..0, pauza/wznowienie, soft stop przez RS485
-- **Gauss meter** – auto-aktywacja przy polu ≥ 50 G (tylko do pomiaru magnesów)
+- **Gauss meter** – auto-kalibracja zera po starcie (gdy brak magnesu), auto-aktywacja przy polu ≥ 50 G
 
 ## Połączenia
 
@@ -61,6 +61,10 @@ Manual silnika: [MKS SERVO42&57ES RS485 User Manual V1.0.1](MKS-SERVO42ES-57ES_R
 | VCC | 3.3V |
 | GND | GND |
 | VOUT | GPIO 1 (ADC1) |
+
+Kalibracja zera: po ~1.5 s od startu, gdy pole < 25 G przez 0.8 s, czujnik sam ustawia offset
+(nie trzeba trzymać stałego 1.65 V w kodzie). Po zdjęciu magnesu offset jest ponownie
+aktualizowany. Stałe w `src/config.h` (`GAUSS_WARMUP_MS`, `GAUSS_CALIB_MAX_G`, itd.).
 
 ## Zliczanie obrotów (z sterownika silnika)
 

@@ -465,8 +465,8 @@ void loop() {
   bool longPress = encoder.longPressed();
 
   gaussMeter.update();
-  if (gaussMeter.active() && mode != AppMode::GaussMeasure && mode != AppMode::Winding &&
-      mode != AppMode::Countdown) {
+  if (gaussMeter.calibrated() && gaussMeter.active() && mode != AppMode::GaussMeasure &&
+      mode != AppMode::Winding && mode != AppMode::Countdown) {
     mode = AppMode::GaussMeasure;
     lcd.clear();
   }
