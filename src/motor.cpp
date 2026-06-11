@@ -23,7 +23,7 @@ void WindingMotor::enable(bool on) {
   }
 }
 
-void WindingMotor::setTargetRpm(uint16_t rpm) {
+void WindingMotor::setTargetRpm(uint16_t rpm, uint8_t acc) {
   if (rpm > MAX_RPM_USER) {
     rpm = MAX_RPM_USER;
   }
@@ -33,7 +33,16 @@ void WindingMotor::setTargetRpm(uint16_t rpm) {
   }
 
   bool reverse = (dir_ == WindingDir::CCW);
-  driver_->speedRun(reverse, rpm, SERVO42_DEFAULT_ACC);
+  driver_->speedRun(reverse, rpm, acc);
+}
+
+void WindingMotor::quickStop() {
+  if (!driver_) {
+    return;
+  }
+  targetRpm_ = 0;
+  bool reverse = (dir_ == WindingDir::CCW);
+  driver_->speedRun(reverse, 0, SERVO42_QUICK_STOP_ACC);
 }
 
 void WindingMotor::tick() {

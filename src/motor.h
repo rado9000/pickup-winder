@@ -15,13 +15,14 @@ class WindingMotor {
   void enable(bool on);
   bool enabled() const { return enabled_; }
 
-  void setTargetRpm(uint16_t rpm);
+  void setTargetRpm(uint16_t rpm, uint8_t acc = SERVO42_DEFAULT_ACC);
   uint16_t targetRpm() const { return targetRpm_; }
   uint16_t currentRpm() const { return currentRpm_; }
 
   void tick();
   bool isStopped() const;
   void waitUntilStopped();
+  void quickStop();
 
   Servo42* driver() { return driver_; }
 

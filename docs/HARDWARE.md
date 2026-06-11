@@ -17,6 +17,7 @@ Manual silnika: [MKS SERVO42&57ES RS485 User Manual V1.0.1](MKS-SERVO42ES-57ES_R
 ## Funkcje
 
 - **Tryb Manual** – edycja zwojów (5 cyfr), RPM (4 cyfry), kierunku CW/CCW
+- **Tryb Live** (`M:Live`) – tylko zwoje + kierunek; RPM sterujesz enkoderem w trakcie nawijania; przytrzymaj przycisk = szybki soft stop
 - **Presets** – zapis do NVS (max 32), long-press = powrót
 - **Nawijanie** – odliczanie 3..0, pauza/wznowienie, soft stop przez RS485
 - **Gauss meter** – auto-kalibracja zera po starcie (gdy brak magnesu), auto-aktywacja przy polu ≥ 50 G

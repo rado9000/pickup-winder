@@ -21,6 +21,7 @@ enum class AppMode {
   Countdown,
   Winding,
   WindingPaused,
+  LiveWinding,
   Complete,
   GaussMeasure,
 };
@@ -52,6 +53,9 @@ static int countdown = 0;
 static uint32_t countdownAtMs = 0;
 
 static bool resumeAfterPause = false;
+static bool pendingLiveWinding = false;
+static bool useLiveRpm = false;
+static uint16_t liveRpm = LIVE_RPM_START;
 static int32_t turnsAtPause = 0;
 static int32_t targetTurnsRun = 0;
 
@@ -84,15 +88,19 @@ static void drawManual() {
   char t[8], r[8];
   bool blink = true;
   int8_t td = (digitField <= 4) ? activeDigit : -1;
-  int8_t rd = (digitField >= 5 && digitField <= 8) ? (activeDigit - 5) : -1;
+  int8_t rd = (!useLiveRpm && digitField >= 5 && digitField <= 8) ? (activeDigit - 5) : -1;
   formatTurns(t, sizeof t, editTurns, td, blink);
-  formatRpm(r, sizeof r, editRpm, rd, blink);
   lcd.setCursor(0, 0);
   lcd.print("Turns:");
   lcd.print(t);
   lcd.setCursor(0, 1);
-  lcd.print("RPM:");
-  lcd.print(r);
+  if (useLiveRpm) {
+    lcd.print("RPM: (live)       ");
+  } else {
+    formatRpm(r, sizeof r, editRpm, rd, blink);
+    lcd.print("RPM:");
+    lcd.print(r);
+  }
   lcd.setCursor(0, 2);
   lcd.print("Dir:");
   lcd.print(editDir == WindingDir::CW ? "CW " : "CCW");
@@ -101,8 +109,28 @@ static void drawManual() {
   } else {
     lcd.print(' ');
   }
+  lcd.print(" M:");
+  lcd.print(useLiveRpm ? "Live" : "Auto");
+  if (digitField == 10 && blinkOn()) {
+    lcd.print('*');
+  }
   lcd.setCursor(0, 3);
-  lcd.print("> Start winding   ");
+  if (digitField == 11 && blinkOn()) {
+    lcd.print("> Start           ");
+  } else {
+    lcd.print(useLiveRpm ? "> Start live      " : "> Start winding   ");
+  }
+}
+
+static void drawLiveWinding() {
+  lcd.setCursor(0, 0);
+  lcd.print("Live manual       ");
+  lcd.setCursor(0, 1);
+  lcd.printf("Turn %ld/%ld", (long)revCounter.turns(), (long)targetTurnsRun);
+  lcd.setCursor(0, 2);
+  lcd.printf("RPM %u (enc)      ", motor.targetRpm());
+  lcd.setCursor(0, 3);
+  lcd.print("Hold: quick stop  ");
 }
 
 static void drawPresetsMenu() {
@@ -224,9 +252,10 @@ static void adjustDigitU16(uint16_t& value, int8_t dig, int delta, uint16_t maxV
   value = (uint16_t)v;
 }
 
-static void startCountdown(bool resume = false) {
+static void startCountdown(bool resume = false, bool live = false) {
   mode = AppMode::Countdown;
   resumeAfterPause = resume;
+  pendingLiveWinding = live;
   countdown = COUNTDOWN_START;
   countdownAtMs = millis();
   lcd.clear();
@@ -244,24 +273,47 @@ static void beginWinding(uint32_t turns, uint16_t rpm, WindingDir dir) {
   mode = AppMode::Winding;
 }
 
+static void beginLiveWinding(uint32_t turns, WindingDir dir) {
+  targetTurnsRun = (int32_t)turns;
+  liveRpm = LIVE_RPM_START;
+  motor.setDirection(dir);
+  revCounter.setMotorDirection(dir);
+  revCounter.reset();
+  revCounter.setTargetTurns(targetTurnsRun);
+  motor.enable(true);
+  if (liveRpm > 0) {
+    motor.setTargetRpm(liveRpm);
+  }
+  mode = AppMode::LiveWinding;
+}
+
 static void stopMotorRamp() {
   motor.setTargetRpm(0);
 }
 
-static void advanceField() {
-  if (digitField < 9) {
-    digitField++;
-    if (digitField <= 4) {
-      activeDigit = digitField;
-    } else if (digitField <= 8) {
-      activeDigit = digitField;
-    } else {
-      activeDigit = 0;
-    }
+static bool isRpmDigitField(int8_t field) {
+  return field >= 5 && field <= 8;
+}
+
+static void syncActiveDigit() {
+  if (digitField <= 4) {
+    activeDigit = digitField;
+  } else if (isRpmDigitField(digitField)) {
+    activeDigit = digitField;
   } else {
-    digitField = 0;
     activeDigit = 0;
   }
+}
+
+static void advanceField() {
+  do {
+    if (digitField < 11) {
+      digitField++;
+    } else {
+      digitField = 0;
+    }
+  } while (useLiveRpm && isRpmDigitField(digitField));
+  syncActiveDigit();
 }
 
 static void handleManualEncoder(int d, bool click, bool longPress) {
@@ -275,20 +327,51 @@ static void handleManualEncoder(int d, bool click, bool longPress) {
     if (digitField <= 4) {
       adjustDigit(editTurns, activeDigit, d > 0 ? 1 : -1, MAX_TURNS);
       clampTurns();
-    } else if (digitField <= 8) {
+    } else if (isRpmDigitField(digitField)) {
       adjustDigitU16(editRpm, activeDigit - 5, d > 0 ? 1 : -1, MAX_RPM_USER);
       clampRpm();
-    } else {
+    } else if (digitField == 9) {
       editDir = (d > 0) ? WindingDir::CW : WindingDir::CCW;
+    } else if (digitField == 10) {
+      useLiveRpm = !useLiveRpm;
+      if (useLiveRpm && isRpmDigitField(digitField)) {
+        digitField = 9;
+        syncActiveDigit();
+      }
     }
   }
   if (click) {
-    if (digitField == 9) {
-      startCountdown(false);
+    if (digitField == 11) {
+      startCountdown(false, useLiveRpm);
     } else {
       advanceField();
     }
   }
+}
+
+static void handleLiveWinding(int d, bool click, bool longPress) {
+  (void)click;
+  if (longPress) {
+    motor.quickStop();
+    motor.waitUntilStopped();
+    motor.enable(false);
+    mode = AppMode::Manual;
+    lcd.clear();
+    return;
+  }
+  if (d == 0) {
+    return;
+  }
+
+  int32_t next = (int32_t)liveRpm + d * LIVE_RPM_STEP;
+  if (next < 0) {
+    next = 0;
+  }
+  if (next > MAX_RPM_USER) {
+    next = MAX_RPM_USER;
+  }
+  liveRpm = (uint16_t)next;
+  motor.setTargetRpm(liveRpm);
 }
 
 static void handlePresets(int d, bool click, bool longPress) {
@@ -466,7 +549,7 @@ void loop() {
 
   gaussMeter.update();
   if (gaussMeter.calibrated() && gaussMeter.active() && mode != AppMode::GaussMeasure &&
-      mode != AppMode::Winding && mode != AppMode::Countdown) {
+      mode != AppMode::Winding && mode != AppMode::LiveWinding && mode != AppMode::Countdown) {
     mode = AppMode::GaussMeasure;
     lcd.clear();
   }
@@ -533,7 +616,10 @@ void loop() {
         countdownAtMs = millis();
         countdown--;
         if (countdown < 0) {
-          if (resumeAfterPause) {
+          if (pendingLiveWinding) {
+            beginLiveWinding(editTurns, editDir);
+            pendingLiveWinding = false;
+          } else if (resumeAfterPause) {
             motor.setDirection(editDir);
             revCounter.setMotorDirection(editDir);
             motor.enable(true);
@@ -559,6 +645,17 @@ void loop() {
         lcd.clear();
       }
       drawWinding(mode == AppMode::WindingPaused);
+      break;
+    case AppMode::LiveWinding:
+      handleLiveWinding(d, click, longPress);
+      if (revCounter.targetReached()) {
+        motor.quickStop();
+        motor.waitUntilStopped();
+        motor.enable(false);
+        mode = AppMode::Complete;
+        lcd.clear();
+      }
+      drawLiveWinding();
       break;
     case AppMode::Complete:
       drawComplete();

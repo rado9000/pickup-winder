@@ -24,6 +24,7 @@
 #define RS485_BAUD 38400
 #define SERVO42_MAX_RPM 3000
 #define SERVO42_DEFAULT_ACC 2
+#define SERVO42_QUICK_STOP_ACC 10
 #define SERVO42_STOP_RPM_THRESHOLD 5
 #define SERVO42_STOP_HOLD_MS 1500
 // Manual 0x31: one revolution = 0x4000 encoder pulses
@@ -54,3 +55,7 @@
 #define MAX_TURNS 99999
 #define MIN_RPM 1
 #define MAX_RPM_USER 1500
+
+// --- Live manual mode (RPM from encoder during winding) ---
+#define LIVE_RPM_STEP 25
+#define LIVE_RPM_START 0
