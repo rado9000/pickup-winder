@@ -3,9 +3,10 @@
 #include <Arduino.h>
 #include "motor.h"
 
+// Turn counting via SERVO42 built-in encoder (RS485 cmd 0x31).
 class RevCounter {
  public:
-  void begin(Servo42* driver, uint8_t hallPin = 0);
+  void begin(Servo42* driver);
   void setMotorDirection(WindingDir dir) { motorDir_ = dir; }
   void poll();
 
@@ -16,16 +17,10 @@ class RevCounter {
 
  private:
   Servo42* driver_ = nullptr;
-  uint8_t hallPin_ = 0;
-  bool useMotorEncoder_ = true;
 
   int32_t turns_ = 0;
   int32_t targetTurns_ = 0;
   WindingDir motorDir_ = WindingDir::CW;
 
   int64_t encoderBaseline_ = 0;
-  int32_t hallCount_ = 0;
-
-  bool lastHallLevel_ = true;
-  uint32_t lastHallEdgeUs_ = 0;
 };

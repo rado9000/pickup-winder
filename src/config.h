@@ -12,7 +12,6 @@
 #define ENCODER_DT_PIN 11
 #define ENCODER_SW_PIN 12
 
-#define A3144_PIN 13
 #define GAUSS_ADC_PIN 1
 
 // --- LCD ---
@@ -27,15 +26,9 @@
 #define SERVO42_DEFAULT_ACC 2
 #define SERVO42_STOP_RPM_THRESHOLD 5
 #define SERVO42_STOP_HOLD_MS 1500
+// Manual 0x31: one revolution = 0x4000 encoder pulses
 #define SERVO42_PULSES_PER_REV 0x4000
 #define SERVO42_INIT_ON_BOOT 1
-
-// Turn counting: 1 = motor encoder via RS485, 0 = external A3144 Hall sensor
-#define USE_MOTOR_ENCODER 1
-
-// --- A3144 (when USE_MOTOR_ENCODER = 0) ---
-#define A3144_PULSES_PER_REV 1
-#define A3144_DEBOUNCE_US 3000
 
 // --- Gauss (AH49HZ3 on ADC) ---
 #define GAUSS_ACTIVATE_G 50.0f

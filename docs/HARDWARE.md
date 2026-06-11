@@ -7,19 +7,19 @@
 | MCU | ESP32-S3 DevKitC-1 |
 | Silnik | Makerbase MKS SERVO42ES NEMA17 (RS485) |
 | Wyświetlacz | LCD 2004A (HD44780, I2C backpack) |
-| Enkoder | Rotary encoder z przyciskiem |
-| Czujnik obrotów | Enkoder wbudowany w SERVO42 (domyślnie) lub A3144 |
-| Czujnik Gauss | AH49HZ3 (analogowy Hall) |
+| Enkoder UI | Rotary encoder z przyciskiem |
+| Zliczanie obrotów | Enkoder magnetyczny wbudowany w SERVO42 (RS485) |
+| Czujnik Gauss | AH49HZ3 (pomiar magnesów pickupu) |
 
 Manual silnika: [MKS SERVO42&57ES RS485 User Manual V1.0.1](MKS-SERVO42ES-57ES_RS485_User_Manual_V1.0.1.pdf)  
 Źródło: [makerbase-motor/MKS-SERVO42ES-57ES](https://github.com/makerbase-motor/MKS-SERVO42ES-57ES/blob/master/User%20Manual/MKS%20SERVO42%2657ES_RS485%20User%20Manual%20V1.0.1.pdf)
 
-## Funkcje (jak w wersji RP2040)
+## Funkcje
 
 - **Tryb Manual** – edycja zwojów (5 cyfr), RPM (4 cyfry), kierunku CW/CCW
 - **Presets** – zapis do NVS (max 32), long-press = powrót
 - **Nawijanie** – odliczanie 3..0, pauza/wznowienie, soft stop przez RS485
-- **Gauss meter** – auto-aktywacja przy polu ≥ 50 G
+- **Gauss meter** – auto-aktywacja przy polu ≥ 50 G (tylko do pomiaru magnesów)
 
 ## Połączenia
 
@@ -44,7 +44,7 @@ Manual silnika: [MKS SERVO42&57ES RS485 User Manual V1.0.1](MKS-SERVO42ES-57ES_R
 | VCC | 5V |
 | GND | GND |
 
-### Enkoder
+### Enkoder (UI)
 
 | Enkoder | ESP32-S3 |
 | --- | --- |
@@ -62,17 +62,18 @@ Manual silnika: [MKS SERVO42&57ES RS485 User Manual V1.0.1](MKS-SERVO42ES-57ES_R
 | GND | GND |
 | VOUT | GPIO 1 (ADC1) |
 
-### A3144 (opcjonalnie, gdy `USE_MOTOR_ENCODER = 0`)
+## Zliczanie obrotów (z sterownika silnika)
 
-| A3144 | ESP32-S3 |
+Obroty liczone są wyłącznie z wbudowanego enkodera SERVO42 przez RS485:
+
+| Komenda | Opis |
 | --- | --- |
-| VCC | 3.3V |
-| GND | GND |
-| OUT | GPIO 13 |
+| `FA addr 31 CRC` | Odczyt wartości enkodera (addition, int48) |
+| — | Jedna rewolucja = `0x4000` (16384) impulsów |
+| — | CW: wartość rośnie o `0x4000`/obrót |
+| — | CCW: wartość maleje o `0x4000`/obrót |
 
-## Zliczanie obrotów
-
-Domyślnie (`USE_MOTOR_ENCODER = 1`) obroty liczone są z enkodera silnika przez RS485 (komenda `0x31`, 0x4000 impulsów/obrót). Alternatywnie ustaw `USE_MOTOR_ENCODER = 0` i podłącz A3144 na GPIO 13.
+Implementacja: `servo42.cpp` → `readEncoderAddition()`, `rev_counter.cpp`.
 
 ## Kompilacja
 
@@ -83,6 +84,13 @@ pio run -e esp32-s3-devkitc-1 -t upload
 
 Konfiguracja pinów: `src/config.h`.
 
-## Test RS485 (bazowy kod)
+## Komendy RS485 (używane w firmware)
 
-Kod testowy silnika (sprawdzony na hardware) jest wbudowany w `src/servo42.cpp`. Sterowanie prędkością: komenda `0xF6`, odczyt RPM: `0x32`, tryb closed-loop: `0x82`.
+| Komenda | Funkcja |
+| --- | --- |
+| `0x82` | Ustawienie trybu SR_CLOSE (closed-loop) |
+| `0x60` | Zapis ustawień |
+| `0xF6` | Sterowanie prędkością (RPM + acc) |
+| `0x32` | Odczyt bieżącego RPM |
+| `0x31` | Odczyt pozycji enkodera (zliczanie obrotów) |
+| `0x37` | Odczyt statusu |

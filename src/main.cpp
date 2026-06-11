@@ -448,7 +448,7 @@ void setup() {
   motor.begin(&servo42);
   encoder.begin(ENCODER_CLK_PIN, ENCODER_DT_PIN, ENCODER_SW_PIN);
   encoder.setLongPressMs(LONG_PRESS_MS);
-  revCounter.begin(&servo42, A3144_PIN);
+  revCounter.begin(&servo42);
   presets.begin();
   gaussMeter.begin(GAUSS_ADC_PIN);
 

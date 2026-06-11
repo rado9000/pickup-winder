@@ -13,6 +13,7 @@ class Servo42 {
 
   bool speedRun(bool reverse, uint16_t rpm, uint8_t acc);
   int16_t readRpm();
+  // Manual cmd 0x31: cumulative encoder (int48), ±0x4000 per revolution
   int64_t readEncoderAddition();
 
   bool waitUntilStopped(uint16_t timeoutMs = 60000);
