@@ -96,10 +96,10 @@
 #define PRESET_NAME_LEN           12
 #define COUNTDOWN_SECONDS         3
 
-// --- Encoder edit acceleration ---
-#define EDIT_FAST_THRESHOLD_MS    80
-#define EDIT_FAST_STEP_TURNS      10
-#define EDIT_FASTER_THRESHOLD_MS  40
-#define EDIT_FASTER_STEP_TURNS    100
-#define EDIT_FAST_STEP_RPM        10
-#define EDIT_FASTER_STEP_RPM      50
+// KY-040 / 20 PPR mechanical encoder
+#define ENC_DEBOUNCE_US           2500
+
+#define TURNS_DIGITS              5
+#define RPM_DIGITS                4
+#define RAMP_TENTHS_DIGITS        3   // 0.1..20.0 s as 001..200 tenths
+

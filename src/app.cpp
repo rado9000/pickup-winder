@@ -7,7 +7,7 @@
 
 void App::setState(AppState s) {
   state_ = s;
-  lastLcdMs_ = 0;  // force redraw
+  lastLcdMs_ = 0;
 }
 
 void App::begin() {
@@ -33,6 +33,7 @@ void App::begin() {
 void App::enterManualEdit() {
   draft_ = WindingProgram{};
   editField_ = 0;
+  digitPos_ = 0;
   editingPreset_ = false;
   saveAsNew_ = false;
   setState(AppState::ManualEdit);
@@ -41,6 +42,7 @@ void App::enterManualEdit() {
 void App::enterPresetEditNew() {
   draft_ = WindingProgram{};
   editField_ = 0;
+  digitPos_ = 0;
   editingPreset_ = false;
   saveAsNew_ = true;
   setState(AppState::PresetEdit);
@@ -56,63 +58,11 @@ void App::enterPresetEditExisting() {
   strncpy(nameBuf_, p.name, PRESET_NAME_LEN);
   nameBuf_[PRESET_NAME_LEN] = 0;
   editField_ = 0;
+  digitPos_ = 0;
   editingPreset_ = true;
   editingPresetIndex_ = presetIndex_;
   saveAsNew_ = false;
   setState(AppState::PresetEdit);
-}
-
-int App::editStepTurns(uint32_t nowMs) const {
-  const uint32_t dt = nowMs - lastEditMs_;
-  if (dt < EDIT_FASTER_THRESHOLD_MS) {
-    return EDIT_FASTER_STEP_TURNS;
-  }
-  if (dt < EDIT_FAST_THRESHOLD_MS) {
-    return EDIT_FAST_STEP_TURNS;
-  }
-  return 1;
-}
-
-int App::editStepRpm(uint32_t nowMs) const {
-  const uint32_t dt = nowMs - lastEditMs_;
-  if (dt < EDIT_FASTER_THRESHOLD_MS) {
-    return EDIT_FASTER_STEP_RPM;
-  }
-  if (dt < EDIT_FAST_THRESHOLD_MS) {
-    return EDIT_FAST_STEP_RPM;
-  }
-  return 1;
-}
-
-void App::adjustTurns(int dir, uint32_t nowMs) {
-  const int step = editStepTurns(nowMs);
-  int64_t v = static_cast<int64_t>(draft_.targetTurns) + dir * step;
-  if (v < static_cast<int64_t>(MIN_TURNS)) {
-    v = MIN_TURNS;
-  }
-  if (v > static_cast<int64_t>(MAX_TURNS)) {
-    v = MAX_TURNS;
-  }
-  draft_.targetTurns = static_cast<uint32_t>(v);
-  lastEditMs_ = nowMs;
-}
-
-void App::adjustRpm(int dir, uint32_t nowMs) {
-  const int step = editStepRpm(nowMs);
-  int32_t v = static_cast<int32_t>(draft_.targetRpm) + dir * step;
-  if (v < MIN_WINDER_RPM) {
-    v = MIN_WINDER_RPM;
-  }
-  if (v > MAX_WINDER_RPM) {
-    v = MAX_WINDER_RPM;
-  }
-  draft_.targetRpm = static_cast<uint16_t>(v);
-  lastEditMs_ = nowMs;
-}
-
-void App::adjustRampMs(uint16_t& ms, int dir) {
-  int32_t v = static_cast<int32_t>(ms) + dir * static_cast<int32_t>(RAMP_TIME_STEP_MS);
-  ms = clampRampMs(static_cast<uint32_t>(v < 0 ? 0 : v));
 }
 
 void App::startCountdown() {
@@ -121,8 +71,156 @@ void App::startCountdown() {
   setState(AppState::Countdown);
 }
 
+uint8_t App::digitsForField(uint8_t field) const {
+  switch (field) {
+    case 0:
+      return TURNS_DIGITS;
+    case 1:
+      return RPM_DIGITS;
+    case 3:
+    case 5:
+      return RAMP_TENTHS_DIGITS;
+    default:
+      return 0;
+  }
+}
+
+void App::formatTurnsDigits(char* out, size_t n, bool blink) const {
+  snprintf(out, n, "%05lu", static_cast<unsigned long>(draft_.targetTurns));
+  if (blink && editField_ == 0 && ((millis() / 400) & 1)) {
+    const int idx = TURNS_DIGITS - 1 - digitPos_;  // units at right
+    if (idx >= 0 && idx < TURNS_DIGITS && static_cast<size_t>(idx) + 1 < n) {
+      out[idx] = '_';
+    }
+  }
+}
+
+void App::formatRpmDigits(char* out, size_t n, bool blink) const {
+  snprintf(out, n, "%04u", draft_.targetRpm);
+  if (blink && editField_ == 1 && ((millis() / 400) & 1)) {
+    const int idx = RPM_DIGITS - 1 - digitPos_;
+    if (idx >= 0 && idx < RPM_DIGITS && static_cast<size_t>(idx) + 1 < n) {
+      out[idx] = '_';
+    }
+  }
+}
+
+void App::formatRampTenthsDigits(char* out, size_t n, uint16_t ms, bool blink) const {
+  uint16_t tenths = ms / 100;
+  if (tenths > 200) {
+    tenths = 200;
+  }
+  // Show as x.x with optional blink on active tenths digit mapped to "XX.X" without dot in buffer
+  char raw[8];
+  snprintf(raw, sizeof raw, "%03u", tenths);
+  // Format as A.B from tenths ABC → AB.C wait: 020 = 2.0s → display "02.0"
+  // tenths 20 → 2.0; use digits: hundreds,tens of tenths as integer part... simpler: "%0.1fs" with blink replacing one char
+  snprintf(out, n, "%0.1fs", ms / 1000.0f);
+  if (blink && ((millis() / 400) & 1)) {
+    // Map digitPos 0=0.1s place, 1=1s, 2=10s onto "XX.Xs"
+    // e.g. "02.0s" indices: 0='0',1='2',2='.',3='0',4='s'
+    int idx = -1;
+    if (digitPos_ == 0) {
+      idx = 3;
+    } else if (digitPos_ == 1) {
+      idx = 1;
+    } else if (digitPos_ == 2) {
+      idx = 0;
+    }
+    if (idx >= 0 && static_cast<size_t>(idx) + 1 < n) {
+      out[idx] = '_';
+    }
+  }
+}
+
+void App::adjustActiveDigit(int dir) {
+  auto bumpDigit = [&](uint32_t& value, uint8_t place /*0=units*/, uint32_t maxVal) {
+    uint32_t placeVal = 1;
+    for (uint8_t i = 0; i < place; i++) {
+      placeVal *= 10;
+    }
+    int32_t digit = static_cast<int32_t>((value / placeVal) % 10);
+    digit += dir;
+    if (digit > 9) {
+      digit = 0;
+    }
+    if (digit < 0) {
+      digit = 9;
+    }
+    value = (value / (placeVal * 10)) * (placeVal * 10) + (value % placeVal) +
+            static_cast<uint32_t>(digit) * placeVal;
+    if (value > maxVal) {
+      value = maxVal;
+    }
+    if (value < 1 && maxVal >= 1) {
+      value = 1;
+    }
+  };
+
+  if (editField_ == 0) {
+    uint32_t v = draft_.targetTurns;
+    bumpDigit(v, digitPos_, MAX_TURNS);
+    draft_.targetTurns = clampTurns(v);
+  } else if (editField_ == 1) {
+    uint32_t v = draft_.targetRpm;
+    bumpDigit(v, digitPos_, MAX_WINDER_RPM);
+    draft_.targetRpm = clampRpm(v);
+    if (draft_.targetRpm < MIN_WINDER_RPM) {
+      draft_.targetRpm = MIN_WINDER_RPM;
+    }
+  } else if (editField_ == 3 || editField_ == 5) {
+    uint16_t& ms = (editField_ == 3) ? draft_.rampUpMs : draft_.rampDownMs;
+    uint32_t tenths = ms / 100;
+    bumpDigit(tenths, digitPos_, RAMP_TIME_MAX_MS / 100);
+    if (tenths < RAMP_TIME_MIN_MS / 100) {
+      tenths = RAMP_TIME_MIN_MS / 100;
+    }
+    ms = clampRampMs(tenths * 100);
+  } else if (editField_ == 2) {
+    draft_.rampUpType =
+        (draft_.rampUpType == RampType::SCurve) ? RampType::Linear : RampType::SCurve;
+  } else if (editField_ == 4) {
+    draft_.rampDownType =
+        (draft_.rampDownType == RampType::SCurve) ? RampType::Linear : RampType::SCurve;
+  } else if (editField_ == 6) {
+    draft_.direction = (draft_.direction == WindDir::CW) ? WindDir::CCW : WindDir::CW;
+  }
+}
+
+void App::onEditClick() {
+  const uint8_t digs = digitsForField(editField_);
+  if (digs > 0) {
+    digitPos_++;
+    if (digitPos_ >= digs) {
+      digitPos_ = 0;
+      if (editField_ < 7) {
+        editField_++;
+      }
+    }
+    return;
+  }
+
+  // Non-digit fields: click advances
+  if (editField_ < 7) {
+    editField_++;
+    digitPos_ = 0;
+    return;
+  }
+
+  // Start / Save
+  if (state_ == AppState::PresetEdit) {
+    namePos_ = 0;
+    if (!editingPreset_) {
+      strncpy(nameBuf_, "PRESET", PRESET_NAME_LEN);
+      nameBuf_[PRESET_NAME_LEN] = 0;
+    }
+    setState(AppState::PresetName);
+  } else {
+    setState(AppState::StartConfirm);
+  }
+}
+
 void App::handleBoot(uint32_t nowMs) {
-  // Slower boot steps — give SERVO42ES time after RS485 begin (test used ~1.5 s).
   if (nowMs - bootStepMs_ < 300) {
     return;
   }
@@ -158,6 +256,10 @@ void App::handleBoot(uint32_t nowMs) {
 }
 
 static void clampMenuWindow(uint8_t selected, uint8_t count, uint8_t& window) {
+  if (count == 0) {
+    window = 0;
+    return;
+  }
   if (selected < window) {
     window = selected;
   }
@@ -170,7 +272,13 @@ static void clampMenuWindow(uint8_t selected, uint8_t count, uint8_t& window) {
 }
 
 void App::render(uint32_t nowMs) {
-  if (nowMs - lastLcdMs_ < LCD_UPDATE_MS && state_ != AppState::Countdown) {
+  if (nowMs - lastLcdMs_ < LCD_UPDATE_MS && state_ != AppState::Countdown &&
+      state_ != AppState::ManualEdit && state_ != AppState::PresetEdit) {
+    return;
+  }
+  // Digit blink needs faster refresh while editing numbers
+  if ((state_ == AppState::ManualEdit || state_ == AppState::PresetEdit) &&
+      nowMs - lastLcdMs_ < 100) {
     return;
   }
   lastLcdMs_ = nowMs;
@@ -192,7 +300,6 @@ void App::render(uint32_t nowMs) {
     }
     case AppState::Language: {
       const char* items[2] = {tr(lang_, StrId::Polski), tr(lang_, StrId::English)};
-      menuWindow_ = 0;
       ui_.drawMenu(lang_, items, 2, menuIndex_, 0);
       break;
     }
@@ -204,7 +311,6 @@ void App::render(uint32_t nowMs) {
     }
     case AppState::ManualEdit:
     case AppState::PresetEdit: {
-      // scrolling 8 fields: turns,rpm,upType,upTime,downType,downTime,dir,start/save
       const uint8_t fieldCount = 8;
       uint8_t top = (editField_ < 3) ? 0 : static_cast<uint8_t>(editField_ - 2);
       if (top > fieldCount - 4) {
@@ -214,14 +320,15 @@ void App::render(uint32_t nowMs) {
         const uint8_t f = static_cast<uint8_t>(top + row);
         char val[16];
         const char* label = "";
+        const bool sel = (editField_ == f);
         switch (f) {
           case 0:
             label = tr(lang_, StrId::Turns);
-            snprintf(val, sizeof val, "%05lu", static_cast<unsigned long>(draft_.targetTurns));
+            formatTurnsDigits(val, sizeof val, sel);
             break;
           case 1:
             label = tr(lang_, StrId::Rpm);
-            snprintf(val, sizeof val, "%4u", draft_.targetRpm);
+            formatRpmDigits(val, sizeof val, sel);
             break;
           case 2:
             label = tr(lang_, StrId::RampUp);
@@ -229,7 +336,7 @@ void App::render(uint32_t nowMs) {
             break;
           case 3:
             label = tr(lang_, StrId::UpTime);
-            snprintf(val, sizeof val, "%0.1fs", draft_.rampUpMs / 1000.0f);
+            formatRampTenthsDigits(val, sizeof val, draft_.rampUpMs, sel);
             break;
           case 4:
             label = tr(lang_, StrId::RampDown);
@@ -237,33 +344,32 @@ void App::render(uint32_t nowMs) {
             break;
           case 5:
             label = tr(lang_, StrId::DownTime);
-            snprintf(val, sizeof val, "%0.1fs", draft_.rampDownMs / 1000.0f);
+            formatRampTenthsDigits(val, sizeof val, draft_.rampDownMs, sel);
             break;
           case 6:
             label = tr(lang_, StrId::Direction);
             formatDir(lang_, draft_.direction, val, sizeof val);
             break;
           default:
-            label = (state_ == AppState::PresetEdit && (saveAsNew_ || editingPreset_))
-                        ? tr(lang_, StrId::Save)
-                        : tr(lang_, StrId::Start);
+            label = (state_ == AppState::PresetEdit) ? tr(lang_, StrId::Save) : tr(lang_, StrId::Start);
             val[0] = 0;
             break;
         }
         char line[21];
         if (f == 7) {
-          snprintf(line, sizeof line, "%c%s", (editField_ == f) ? '>' : ' ', label);
+          snprintf(line, sizeof line, "%c%s", sel ? '>' : ' ', label);
         } else {
-          snprintf(line, sizeof line, "%c%s:%s", (editField_ == f) ? '>' : ' ', label, val);
+          snprintf(line, sizeof line, "%c%s:%s", sel ? '>' : ' ', label, val);
         }
         ui_.setLine(row, line);
       }
       break;
     }
     case AppState::PresetList: {
-      const uint8_t total = static_cast<uint8_t>(presets_.count() + 1);
-      char names[33][21];
-      const char* items[33];
+      // +NEW, presets..., BACK
+      const uint8_t total = static_cast<uint8_t>(presets_.count() + 2);
+      char names[34][21];
+      const char* items[34];
       snprintf(names[0], sizeof names[0], "%s", tr(lang_, StrId::NewPreset));
       items[0] = names[0];
       for (uint8_t i = 0; i < presets_.count(); i++) {
@@ -275,15 +381,18 @@ void App::render(uint32_t nowMs) {
         }
         items[i + 1] = names[i + 1];
       }
+      snprintf(names[presets_.count() + 1], sizeof names[0], "%s", tr(lang_, StrId::Back));
+      items[presets_.count() + 1] = names[presets_.count() + 1];
       clampMenuWindow(menuIndex_, total, menuWindow_);
       ui_.drawMenu(lang_, items, total, menuIndex_, menuWindow_);
       break;
     }
     case AppState::PresetActions: {
-      const char* items[4] = {tr(lang_, StrId::Start), tr(lang_, StrId::Edit),
-                              tr(lang_, StrId::Rename), tr(lang_, StrId::Delete)};
-      clampMenuWindow(actionIndex_, 4, menuWindow_);
-      ui_.drawMenu(lang_, items, 4, actionIndex_, menuWindow_);
+      const char* items[5] = {tr(lang_, StrId::Start), tr(lang_, StrId::Edit),
+                              tr(lang_, StrId::Rename), tr(lang_, StrId::Delete),
+                              tr(lang_, StrId::Back)};
+      clampMenuWindow(actionIndex_, 5, menuWindow_);
+      ui_.drawMenu(lang_, items, 5, actionIndex_, menuWindow_);
       break;
     }
     case AppState::PresetName: {
@@ -291,24 +400,14 @@ void App::render(uint32_t nowMs) {
       snprintf(line, sizeof line, "NAME:%s", nameBuf_);
       if (namePos_ >= 0 && namePos_ < PRESET_NAME_LEN) {
         const size_t pos = 5 + static_cast<size_t>(namePos_);
-        if (pos < 20) {
-          // blink underscore handled simply
-          if ((nowMs / 400) & 1) {
-            if (line[pos] == 0 || line[pos] == ' ') {
-              line[pos] = '_';
-              if (line[pos + 1] == 0) {
-                // ensure null
-              }
-            } else {
-              line[pos] = '_';
-            }
-          }
+        if (pos < 20 && ((nowMs / 400) & 1)) {
+          line[pos] = '_';
         }
       }
       ui_.setLine(0, tr(lang_, StrId::Rename));
       ui_.setLine(1, line);
       ui_.setLine(2, "ROT=CHAR CLICK=NEXT");
-      ui_.setLine(3, tr(lang_, StrId::HoldBack));
+      ui_.setLine(3, "HOLD=SAVE");
       break;
     }
     case AppState::PresetDeleteConfirm: {
@@ -350,19 +449,22 @@ void App::render(uint32_t nowMs) {
 }
 
 void App::handleInput(uint32_t nowMs) {
-  // Priority: while winding, consume long-press ASAP
-  InputEvent ev = InputEvent::None;
-  int delta = 0;
-
-  if (state_ == AppState::Winding || state_ == AppState::Paused ||
-      state_ == AppState::Countdown) {
-    ev = input_.takeEvent();
-    // Also drain rotation for live feel if needed later
-    delta = input_.takeDelta();
-  } else {
-    delta = input_.takeDelta();
-    ev = input_.takeEvent();
+  const InputEvent ev = input_.takeEvent();
+  int delta = input_.takeDelta();
+  // Drain extra detents this frame as separate steps for menus (max 2)
+  int steps = 0;
+  if (delta != 0) {
+    steps = delta > 0 ? 1 : -1;
   }
+  while (true) {
+    const int more = input_.takeDelta();
+    if (more == 0) {
+      break;
+    }
+    // ignore extras — one detent per poll already coalesced
+    break;
+  }
+  (void)nowMs;
 
   auto onRotate = [&](int dir) {
     switch (state_) {
@@ -376,10 +478,7 @@ void App::handleInput(uint32_t nowMs) {
         menuIndex_ = (menuIndex_ == 0) ? 1 : 0;
         break;
       case AppState::PresetList: {
-        const uint8_t total = static_cast<uint8_t>(presets_.count() + 1);
-        if (total == 0) {
-          break;
-        }
+        const uint8_t total = static_cast<uint8_t>(presets_.count() + 2);
         if (dir > 0) {
           menuIndex_ = static_cast<uint8_t>((menuIndex_ + 1) % total);
         } else {
@@ -388,51 +487,20 @@ void App::handleInput(uint32_t nowMs) {
         break;
       }
       case AppState::PresetActions:
-        if (dir > 0) {
-          actionIndex_ = static_cast<uint8_t>((actionIndex_ + 1) % 4);
-        } else {
-          actionIndex_ = static_cast<uint8_t>((actionIndex_ + 3) % 4);
-        }
+        actionIndex_ = static_cast<uint8_t>((actionIndex_ + (dir > 0 ? 1 : 4)) % 5);
         break;
       case AppState::PresetDeleteConfirm:
         deleteYes_ = !deleteYes_;
         break;
       case AppState::ManualEdit:
       case AppState::PresetEdit:
-        switch (editField_) {
-          case 0:
-            adjustTurns(dir, nowMs);
-            break;
-          case 1:
-            adjustRpm(dir, nowMs);
-            break;
-          case 2:
-            draft_.rampUpType =
-                (draft_.rampUpType == RampType::SCurve) ? RampType::Linear : RampType::SCurve;
-            break;
-          case 3:
-            adjustRampMs(draft_.rampUpMs, dir);
-            break;
-          case 4:
-            draft_.rampDownType =
-                (draft_.rampDownType == RampType::SCurve) ? RampType::Linear : RampType::SCurve;
-            break;
-          case 5:
-            adjustRampMs(draft_.rampDownMs, dir);
-            break;
-          case 6:
-            draft_.direction = (draft_.direction == WindDir::CW) ? WindDir::CCW : WindDir::CW;
-            break;
-          default:
-            break;
-        }
+        adjustActiveDigit(dir);
         break;
       case AppState::PresetName: {
         char c = nameBuf_[namePos_];
         if (c == 0) {
           c = 'A';
         }
-        // charset A-Z 0-9 space _
         auto nextChar = [](char ch, int d) -> char {
           const char* set = "ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789 _";
           const int n = 38;
@@ -457,30 +525,23 @@ void App::handleInput(uint32_t nowMs) {
     }
   };
 
-  if (delta != 0) {
-    // Apply each step for menus; for value edits use sign once with acceleration
-    if (state_ == AppState::ManualEdit || state_ == AppState::PresetEdit ||
-        state_ == AppState::PresetName) {
-      onRotate(delta > 0 ? 1 : -1);
-    } else {
-      onRotate(delta > 0 ? 1 : -1);
-    }
+  if (steps != 0) {
+    onRotate(steps);
   }
 
   if (ev == InputEvent::LongPress) {
     switch (state_) {
-      case AppState::MainMenu:
-        break;
       case AppState::Settings:
       case AppState::Language:
       case AppState::Diagnostics:
+      case AppState::ManualEdit:
         menuIndex_ = 0;
         setState(AppState::MainMenu);
         break;
-      case AppState::ManualEdit:
+      case AppState::PresetList:
+        menuIndex_ = 0;
         setState(AppState::MainMenu);
         break;
-      case AppState::PresetList:
       case AppState::PresetActions:
       case AppState::PresetEdit:
       case AppState::PresetDeleteConfirm:
@@ -488,7 +549,6 @@ void App::handleInput(uint32_t nowMs) {
         setState(AppState::PresetList);
         break;
       case AppState::PresetName: {
-        // Long press = save name / preset
         nameBuf_[PRESET_NAME_LEN] = 0;
         PresetRecord rec{};
         strncpy(rec.name, nameBuf_, PRESET_NAME_LEN);
@@ -567,33 +627,27 @@ void App::handleInput(uint32_t nowMs) {
         break;
       case AppState::ManualEdit:
       case AppState::PresetEdit:
-        if (editField_ < 7) {
-          editField_++;
-        } else {
-          // Start or Save
-          if (state_ == AppState::PresetEdit) {
-            // go to name editor then save
-            namePos_ = 0;
-            if (!editingPreset_) {
-              strncpy(nameBuf_, "PRESET", PRESET_NAME_LEN);
-              nameBuf_[PRESET_NAME_LEN] = 0;
-            }
-            setState(AppState::PresetName);
-          } else {
-            setState(AppState::StartConfirm);
-          }
-        }
+        onEditClick();
         break;
-      case AppState::PresetList:
+      case AppState::PresetList: {
+        const uint8_t backIdx = static_cast<uint8_t>(presets_.count() + 1);
         if (menuIndex_ == 0) {
           enterPresetEditNew();
+        } else if (menuIndex_ == backIdx) {
+          menuIndex_ = 0;
+          setState(AppState::MainMenu);
         } else {
           presetIndex_ = static_cast<uint8_t>(menuIndex_ - 1);
           actionIndex_ = 0;
           setState(AppState::PresetActions);
         }
         break;
+      }
       case AppState::PresetActions: {
+        if (actionIndex_ == 4) {
+          setState(AppState::PresetList);
+          break;
+        }
         PresetRecord p{};
         if (!presets_.get(presetIndex_, p)) {
           setState(AppState::PresetList);
@@ -611,7 +665,6 @@ void App::handleInput(uint32_t nowMs) {
           editingPreset_ = true;
           editingPresetIndex_ = presetIndex_;
           saveAsNew_ = false;
-          // rename only
           draft_ = p.program;
           setState(AppState::PresetName);
         } else {
@@ -629,10 +682,6 @@ void App::handleInput(uint32_t nowMs) {
           namePos_ = PRESET_NAME_LEN - 1;
         }
         nameBuf_[PRESET_NAME_LEN] = 0;
-        // Long workflow: after finishing name via long-press save — also allow click at end
-        // Use long press to save; click advances char. If user clicks on last char repeatedly,
-        // save when namePos hits end twice — simpler: long press saves (already).
-        // Additional: if click when namePos at last and buffer filled, save.
         break;
       }
       case AppState::PresetDeleteConfirm:
@@ -650,17 +699,11 @@ void App::handleInput(uint32_t nowMs) {
         setState(AppState::Winding);
         break;
       case AppState::Complete:
-        // again
         startCountdown();
         break;
       default:
         break;
     }
-  }
-
-  // Preset name save on long-press already goes back — handle save there
-  if (ev == InputEvent::LongPress && state_ == AppState::PresetName) {
-    // overwritten above — fix: save then leave
   }
 }
 
@@ -676,7 +719,6 @@ void App::loop() {
     handleBoot(now);
   }
 
-  // Winding engine tick
   if (state_ == AppState::Winding || state_ == AppState::Paused) {
     winding_.tick(now);
     if (winding_.isPaused()) {

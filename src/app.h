@@ -30,7 +30,8 @@ class App {
 
   uint8_t menuIndex_ = 0;
   uint8_t menuWindow_ = 0;
-  uint8_t editField_ = 0;
+  uint8_t editField_ = 0;   // 0 turns .. 7 start/save
+  uint8_t digitPos_ = 0;     // 0 = units (ones), then tens, ...
   uint8_t presetIndex_ = 0;
   uint8_t actionIndex_ = 0;
   bool deleteYes_ = false;
@@ -46,20 +47,20 @@ class App {
   uint8_t bootStep_ = 0;
   const char* errorLine_ = nullptr;
 
-  uint32_t lastEditMs_ = 0;
-
   void setState(AppState s);
   void render(uint32_t nowMs);
   void handleInput(uint32_t nowMs);
   void handleBoot(uint32_t nowMs);
   void startCountdown();
-  void adjustTurns(int dir, uint32_t nowMs);
-  void adjustRpm(int dir, uint32_t nowMs);
-  void adjustRampMs(uint16_t& ms, int dir);
-  int editStepTurns(uint32_t nowMs) const;
-  int editStepRpm(uint32_t nowMs) const;
 
   void enterManualEdit();
   void enterPresetEditNew();
   void enterPresetEditExisting();
+
+  void formatTurnsDigits(char* out, size_t n, bool blink) const;
+  void formatRpmDigits(char* out, size_t n, bool blink) const;
+  void formatRampTenthsDigits(char* out, size_t n, uint16_t ms, bool blink) const;
+  void adjustActiveDigit(int dir);
+  void onEditClick();
+  uint8_t digitsForField(uint8_t field) const;
 };
