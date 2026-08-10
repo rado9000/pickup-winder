@@ -50,9 +50,9 @@
 // Heartbeat protection (cmd 0x89), ms. 0 = off. Active only while winding.
 #define SERVO_HEARTBEAT_MS        2000
 
-#define SERVO_RESPONSE_TIMEOUT_MS 80
-#define SERVO_COMM_RETRIES        3
-#define SERVO_POS_LOSS_FAULT_MS   500
+#define SERVO_RESPONSE_TIMEOUT_MS 150
+#define SERVO_COMM_RETRIES        5
+#define SERVO_POS_LOSS_FAULT_MS   800
 
 // --- Winder limits ---
 #define MAX_WINDER_RPM            2500

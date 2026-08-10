@@ -11,18 +11,42 @@ bool MotorController::detect() {
   if (!servo_) {
     return false;
   }
-  uint8_t st = 0;
-  if (!servo_->readAlarm(st)) {
+
+  // Several attempts — bus may need a moment after power-up (like the test sketch).
+  bool gotStatus = false;
+  bool gotEnc = false;
+  for (int i = 0; i < 8; i++) {
+    uint8_t st = 0;
+    if (servo_->readAlarm(st)) {
+      alarmStatus_ = st;
+      gotStatus = true;
+      Serial.printf("[MOTOR] status OK al=%u try=%d\n", st, i);
+      break;
+    }
+    delay(100);
+  }
+  if (!gotStatus) {
+    Serial.println(F("[MOTOR] status read failed"));
     return false;
   }
-  alarmStatus_ = st;
-  int64_t enc = 0;
-  if (!servo_->readEncoder(enc)) {
+
+  for (int i = 0; i < 8; i++) {
+    int64_t enc = 0;
+    if (servo_->readEncoder(enc)) {
+      encoder_ = enc;
+      encoderOk_ = true;
+      lastPosOkMs_ = millis();
+      gotEnc = true;
+      Serial.printf("[MOTOR] enc OK=%lld try=%d\n", static_cast<long long>(enc), i);
+      break;
+    }
+    delay(100);
+  }
+  if (!gotEnc) {
+    Serial.println(F("[MOTOR] encoder read failed"));
     return false;
   }
-  encoder_ = enc;
-  encoderOk_ = true;
-  lastPosOkMs_ = millis();
+
   int16_t rpm = 0;
   if (servo_->readRpm(rpm)) {
     actualRpmSigned_ = rpm;

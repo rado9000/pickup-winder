@@ -122,17 +122,19 @@ void App::startCountdown() {
 }
 
 void App::handleBoot(uint32_t nowMs) {
-  if (nowMs - bootStepMs_ < 200) {
+  // Slower boot steps — give SERVO42ES time after RS485 begin (test used ~1.5 s).
+  if (nowMs - bootStepMs_ < 300) {
     return;
   }
   bootStepMs_ = nowMs;
   bootStep_++;
-  ui_.drawBootProgress(static_cast<uint8_t>(bootStep_ * 12));
+  ui_.drawBootProgress(static_cast<uint8_t>(bootStep_ * 10));
 
-  if (bootStep_ == 3) {
-    Serial.println(F("[BOOT] RS485 init done"));
+  if (bootStep_ == 2) {
+    Serial.println(F("[BOOT] waiting for motor bus..."));
   }
-  if (bootStep_ == 5) {
+  if (bootStep_ == 4) {
+    Serial.println(F("[BOOT] probing SERVO42ES"));
     if (!motor_.detect()) {
       Serial.println(F("[BOOT] SERVO42ES NOT FOUND"));
       errorLine_ = "NO RS485 RESPONSE";
@@ -143,12 +145,12 @@ void App::handleBoot(uint32_t nowMs) {
     Serial.printf("[MOTOR] ENC=%lld RPM=%d AL=%u\n", static_cast<long long>(motor_.encoder()),
                   motor_.actualRpmSigned(), motor_.alarmStatus());
   }
-  if (bootStep_ >= 8) {
+  if (bootStep_ >= 7) {
     ui_.setLine(0, tr(lang_, StrId::AppTitle));
     ui_.setLine(1, tr(lang_, StrId::SystemReady));
     ui_.setLine(2, "");
     ui_.setLine(3, "");
-    delay(400);  // brief boot pause only
+    delay(300);
     menuIndex_ = 0;
     menuWindow_ = 0;
     setState(AppState::MainMenu);
@@ -371,10 +373,7 @@ void App::handleInput(uint32_t nowMs) {
         menuIndex_ = static_cast<uint8_t>((menuIndex_ + (dir > 0 ? 1 : 2)) % 3);
         break;
       case AppState::Language:
-        menuIndex_ = static_cast<uint8_t>((menuIndex_ + (dir > 0 ? 1 : 1)) % 2);
-        if (dir < 0) {
-          menuIndex_ = menuIndex_ == 0 ? 1 : 0;
-        }
+        menuIndex_ = (menuIndex_ == 0) ? 1 : 0;
         break;
       case AppState::PresetList: {
         const uint8_t total = static_cast<uint8_t>(presets_.count() + 1);
