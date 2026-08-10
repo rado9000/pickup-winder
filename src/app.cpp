@@ -85,40 +85,29 @@ uint8_t App::digitsForField(uint8_t field) const {
   }
 }
 
-void App::formatTurnsDigits(char* out, size_t n, bool blink) const {
+void App::formatTurnsDigits(char* out, unsigned n, bool blink) const {
   snprintf(out, n, "%05lu", static_cast<unsigned long>(draft_.targetTurns));
   if (blink && editField_ == 0 && ((millis() / 400) & 1)) {
-    const int idx = TURNS_DIGITS - 1 - digitPos_;  // units at right
-    if (idx >= 0 && idx < TURNS_DIGITS && static_cast<size_t>(idx) + 1 < n) {
+    const int idx = TURNS_DIGITS - 1 - digitPos_;
+    if (idx >= 0 && idx < TURNS_DIGITS && static_cast<unsigned>(idx) + 1 < n) {
       out[idx] = '_';
     }
   }
 }
 
-void App::formatRpmDigits(char* out, size_t n, bool blink) const {
+void App::formatRpmDigits(char* out, unsigned n, bool blink) const {
   snprintf(out, n, "%04u", draft_.targetRpm);
   if (blink && editField_ == 1 && ((millis() / 400) & 1)) {
     const int idx = RPM_DIGITS - 1 - digitPos_;
-    if (idx >= 0 && idx < RPM_DIGITS && static_cast<size_t>(idx) + 1 < n) {
+    if (idx >= 0 && idx < RPM_DIGITS && static_cast<unsigned>(idx) + 1 < n) {
       out[idx] = '_';
     }
   }
 }
 
-void App::formatRampTenthsDigits(char* out, size_t n, uint16_t ms, bool blink) const {
-  uint16_t tenths = ms / 100;
-  if (tenths > 200) {
-    tenths = 200;
-  }
-  // Show as x.x with optional blink on active tenths digit mapped to "XX.X" without dot in buffer
-  char raw[8];
-  snprintf(raw, sizeof raw, "%03u", tenths);
-  // Format as A.B from tenths ABC → AB.C wait: 020 = 2.0s → display "02.0"
-  // tenths 20 → 2.0; use digits: hundreds,tens of tenths as integer part... simpler: "%0.1fs" with blink replacing one char
+void App::formatRampTenthsDigits(char* out, unsigned n, uint16_t ms, bool blink) const {
   snprintf(out, n, "%0.1fs", ms / 1000.0f);
   if (blink && ((millis() / 400) & 1)) {
-    // Map digitPos 0=0.1s place, 1=1s, 2=10s onto "XX.Xs"
-    // e.g. "02.0s" indices: 0='0',1='2',2='.',3='0',4='s'
     int idx = -1;
     if (digitPos_ == 0) {
       idx = 3;
@@ -127,7 +116,7 @@ void App::formatRampTenthsDigits(char* out, size_t n, uint16_t ms, bool blink) c
     } else if (digitPos_ == 2) {
       idx = 0;
     }
-    if (idx >= 0 && static_cast<size_t>(idx) + 1 < n) {
+    if (idx >= 0 && static_cast<unsigned>(idx) + 1 < n) {
       out[idx] = '_';
     }
   }

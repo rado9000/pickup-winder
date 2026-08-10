@@ -57,9 +57,9 @@ class App {
   void enterPresetEditNew();
   void enterPresetEditExisting();
 
-  void formatTurnsDigits(char* out, size_t n, bool blink) const;
-  void formatRpmDigits(char* out, size_t n, bool blink) const;
-  void formatRampTenthsDigits(char* out, size_t n, uint16_t ms, bool blink) const;
+  void formatTurnsDigits(char* out, unsigned n, bool blink) const;
+  void formatRpmDigits(char* out, unsigned n, bool blink) const;
+  void formatRampTenthsDigits(char* out, unsigned n, uint16_t ms, bool blink) const;
   void adjustActiveDigit(int dir);
   void onEditClick();
   uint8_t digitsForField(uint8_t field) const;
