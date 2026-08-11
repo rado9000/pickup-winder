@@ -70,19 +70,23 @@ class App {
   uint32_t manualTargetTurns_   = DEFAULT_MANUAL_TURNS;
   uint64_t manualTargetCounts_  = 0;
   bool     manualTargetEnabled_ = false;  // false when turns == 0 (unlimited)
-  bool     manualApproachIssued_ = false;
   bool     manualTargetReached_  = false; // latch: no more nonzero motion
-  WindDir  manualTargetFinishDir_ = WindDir::CW;  // locked at TargetBraking start
+  WindDir  manualTargetFinishDir_ = WindDir::CW;  // locked at finish takeover
+
+  // Continuous automatic finishing capture (position-based deceleration).
+  uint16_t manualFinishStartRpm_       = 0;
+  uint64_t manualFinishStartRemCounts_ = 0;
+  uint16_t manualFinishCmdRpm_         = 0;  // last auto cmd (monotonic + LCD UST)
+  uint32_t lastManualFinishLogMs_      = 0;
 
   // Internal FSM for physical motor state during reversal / target stop.
   enum class ManualPhase : uint8_t {
-    Idle,            // motor stopped, no command pending
-    Running,         // motor commanded in same direction as target
-    Braking,         // motor braking toward zero (user direction change / click)
-    Reversing,       // waiting for actual RPM ≤ threshold, then switch direction
-    TargetBraking,   // turn-limit safety: decelerating toward target
-    TargetApproach,  // low-speed F6 SAME-DIRECTION only (never F4 / reverse)
-    TargetStopping,  // target reached: soft-stop, wait RPM≈0, releaseMotor
+    Idle,             // motor stopped, no command pending
+    Running,          // motor commanded in same direction as target
+    Braking,          // motor braking toward zero (user direction change / click)
+    Reversing,        // waiting for actual RPM ≤ threshold, then switch direction
+    TargetFinishing,  // auto continuous same-dir deceleration to target
+    TargetStopping,   // target reached: soft-stop, wait RPM≈0, releaseMotor
   };
   ManualPhase manualPhase_ = ManualPhase::Idle;
 
@@ -116,7 +120,10 @@ class App {
   void enterManualMode();
   void tickManualMode(uint32_t nowMs);
   void finishManualTarget();
+  void beginManualTargetFinishing(uint64_t remainingCounts, uint16_t actualRpm);
+  uint16_t manualFinishRpmForRemaining(uint64_t remainingCounts) const;
   bool manualShouldStartTargetBrake(uint64_t remainingCounts, uint16_t actualRpm) const;
+  bool manualInAutoFinish() const;
   uint64_t manualRemainingCounts() const;
 
   void enterPresetEditNew();

@@ -104,7 +104,7 @@
 #define DEFAULT_RAMP_UP_MS        2000
 #define DEFAULT_RAMP_DOWN_MS      3000
 // Predicted Manual target-stop distance uses this ramp-down time with
-// Ramp::stoppingTurns(), then soft-stop + final approach (same idea as Auto).
+// Ramp::stoppingTurns() for takeover distance (continuous finish, no restart).
 #define MANUAL_TARGET_RAMP_DOWN_MS  DEFAULT_RAMP_DOWN_MS
 #define RAMP_TIME_MIN_MS          100
 #define RAMP_TIME_MAX_MS          20000
@@ -118,6 +118,10 @@
 // Begin soft-stop slightly before exact target during same-direction
 // low-speed F6 final approach. NEVER used to reverse/correct.
 #define FINAL_FORWARD_STOP_COMPENSATION_COUNTS  64
+
+// Manual continuous target finishing (no intermediate stop/restart).
+#define MANUAL_FINISH_MIN_RPM                40
+#define MANUAL_FINISH_STOP_COMP_COUNTS       FINAL_FORWARD_STOP_COMPENSATION_COUNTS
 
 // Serial debug for winding target end (set 1 to enable)
 #define WIND_TARGET_DEBUG         1

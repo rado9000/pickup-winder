@@ -185,8 +185,7 @@ bool App::motorActivityBlocksGaussOverlay() const {
       (manualPhase_ == ManualPhase::Running ||
        manualPhase_ == ManualPhase::Braking ||
        manualPhase_ == ManualPhase::Reversing ||
-       manualPhase_ == ManualPhase::TargetBraking ||
-       manualPhase_ == ManualPhase::TargetApproach ||
+       manualPhase_ == ManualPhase::TargetFinishing ||
        manualPhase_ == ManualPhase::TargetStopping ||
        manualTargetSigned_ != 0 ||
        motor_.actualRpmAbs() > MANUAL_STOPPED_RPM)) {
@@ -462,9 +461,12 @@ void App::enterManualMode() {
   manualTravelCounts_   = 0;
   manualAccelDir_       = 0;
   manualAccelStreak_    = 0;
-  manualApproachIssued_ = false;
   manualTargetReached_  = false;
   manualTargetFinishDir_ = WindDir::CW;
+  manualFinishStartRpm_ = 0;
+  manualFinishStartRemCounts_ = 0;
+  manualFinishCmdRpm_   = 0;
+  lastManualFinishLogMs_ = 0;
 
   // 0 = unlimited free-running Manual; >0 enables encoder turn-limit stop.
   manualTargetEnabled_ = (manualTargetTurns_ > 0);
@@ -487,9 +489,14 @@ uint64_t App::manualRemainingCounts() const {
   return manualTargetCounts_ - manualTravelCounts_;
 }
 
+bool App::manualInAutoFinish() const {
+  return manualPhase_ == ManualPhase::TargetFinishing ||
+         manualPhase_ == ManualPhase::TargetStopping;
+}
+
 bool App::manualShouldStartTargetBrake(uint64_t remainingCounts, uint16_t actualRpm) const {
   if (!manualTargetEnabled_) return false;
-  // Reuse Auto stopping-distance prediction (Ramp::stoppingTurns + compensation).
+  // Takeover distance from current RPM (same Ramp::stoppingTurns idea as Auto).
   const float stopTurns = Ramp::stoppingTurns(
       static_cast<float>(actualRpm),
       MANUAL_TARGET_RAMP_DOWN_MS / 1000.0f);
@@ -502,27 +509,79 @@ bool App::manualShouldStartTargetBrake(uint64_t remainingCounts, uint16_t actual
   return remainingCounts <= needCounts;
 }
 
-void App::finishManualTarget() {
-  // Do not Complete while still spinning — enter TargetStopping first.
-  manualTargetReached_  = true;
-  manualTargetSigned_   = 0;
-  manualApproachIssued_ = false;
-  manualPhase_          = ManualPhase::TargetStopping;
-  motor_.softStop();
-#if WIND_TARGET_DEBUG
-  Serial.println(F("[MANUAL] TARGET REACHED"));
-  Serial.printf("[MANUAL] travel=%llu tgt=%llu\n",
-                static_cast<unsigned long long>(manualTravelCounts_),
-                static_cast<unsigned long long>(manualTargetCounts_));
-  Serial.println(F("[MANUAL] STOPPING"));
-#endif
-}
-
-// Returns |manualTargetSigned_| clamped to MAX_WINDER_RPM
+// Returns |v| clamped to MAX_WINDER_RPM
 static uint16_t absClamped(int16_t v) {
   int32_t a = v < 0 ? -static_cast<int32_t>(v) : static_cast<int32_t>(v);
   if (a > MAX_WINDER_RPM) a = MAX_WINDER_RPM;
   return static_cast<uint16_t>(a);
+}
+
+void App::beginManualTargetFinishing(uint64_t remainingCounts, uint16_t actualRpm) {
+  manualTargetFinishDir_ = manualMotorDir_;
+
+  // Capture entry RPM — never accelerate later. Prefer actual; fall back to user set.
+  uint16_t startRpm = actualRpm;
+  if (startRpm == 0) {
+    startRpm = absClamped(manualTargetSigned_);
+  }
+  manualFinishStartRpm_ = startRpm;
+  manualFinishStartRemCounts_ =
+      (remainingCounts > 0) ? remainingCounts : 1ULL;
+  manualFinishCmdRpm_ = startRpm;
+  manualTargetSigned_ = 0;  // user setpoint cleared; auto owns UST display
+  lastManualFinishLogMs_ = 0;
+  manualPhase_ = ManualPhase::TargetFinishing;
+
+#if WIND_TARGET_DEBUG
+  Serial.println(F("[MANUAL] AUTO FINISH START"));
+  Serial.printf("[MANUAL] startRPM=%u startRemainingTurns=%.2f finishDir=%s\n",
+                static_cast<unsigned>(manualFinishStartRpm_),
+                static_cast<double>(manualFinishStartRemCounts_) / SERVO_COUNTS_PER_REV,
+                manualTargetFinishDir_ == WindDir::CW ? "CW" : "CCW");
+#endif
+}
+
+uint16_t App::manualFinishRpmForRemaining(uint64_t remainingCounts) const {
+  if (manualFinishStartRemCounts_ == 0) {
+    return 0;
+  }
+  // Floor: MANUAL_FINISH_MIN_RPM, but never above entry RPM (no auto accelerate).
+  const uint16_t floorRpm =
+      (manualFinishStartRpm_ < MANUAL_FINISH_MIN_RPM)
+          ? manualFinishStartRpm_
+          : static_cast<uint16_t>(MANUAL_FINISH_MIN_RPM);
+
+  if (remainingCounts >= manualFinishStartRemCounts_) {
+    return manualFinishStartRpm_;
+  }
+
+  const float x = 1.0f -
+      (static_cast<float>(remainingCounts) /
+       static_cast<float>(manualFinishStartRemCounts_));
+  const float smooth = Ramp::quinticS(x);  // 0..1
+  float rpmF = static_cast<float>(manualFinishStartRpm_) -
+               smooth * static_cast<float>(manualFinishStartRpm_ - floorRpm);
+  if (rpmF < static_cast<float>(floorRpm)) rpmF = static_cast<float>(floorRpm);
+  if (rpmF > static_cast<float>(manualFinishStartRpm_)) {
+    rpmF = static_cast<float>(manualFinishStartRpm_);
+  }
+  return static_cast<uint16_t>(rpmF + 0.5f);
+}
+
+void App::finishManualTarget() {
+  // Do not Complete while still spinning — enter TargetStopping first.
+  manualTargetReached_  = true;
+  manualTargetSigned_   = 0;
+  manualFinishCmdRpm_   = 0;
+  manualPhase_          = ManualPhase::TargetStopping;
+  motor_.softStop();
+#if WIND_TARGET_DEBUG
+  Serial.println(F("[MANUAL] FINAL STOP"));
+  Serial.println(F("[MANUAL] TARGET REACHED"));
+  Serial.printf("[MANUAL] travel=%llu tgt=%llu\n",
+                static_cast<unsigned long long>(manualTravelCounts_),
+                static_cast<unsigned long long>(manualTargetCounts_));
+#endif
 }
 
 void App::tickManualMode(uint32_t nowMs) {
@@ -561,25 +620,14 @@ void App::tickManualMode(uint32_t nowMs) {
   // ── Turn-limit: reached or passed? ───────────────────────────────
   if (manualTargetEnabled_ && !manualTargetReached_ && remCounts == 0) {
     finishManualTarget();
-    // fall through into TargetStopping this tick
   }
 
-  // ── Turn-limit: begin controlled stop before overshoot ───────────
+  // ── Turn-limit: take over for continuous same-direction finishing ─
   if (manualTargetEnabled_ && !manualTargetReached_ &&
-      manualPhase_ != ManualPhase::TargetBraking &&
-      manualPhase_ != ManualPhase::TargetApproach &&
+      manualPhase_ != ManualPhase::TargetFinishing &&
       manualPhase_ != ManualPhase::TargetStopping &&
       manualShouldStartTargetBrake(remCounts, actualRpm)) {
-    // Lock physical direction for the rest of target completion.
-    manualTargetFinishDir_ = manualMotorDir_;
-    manualTargetSigned_    = 0;
-    manualApproachIssued_  = false;
-    manualPhase_           = ManualPhase::TargetBraking;
-#if WIND_TARGET_DEBUG
-    Serial.printf("[MANUAL] target brake start rem=%.2f dir=%s\n",
-                  static_cast<double>(remCounts) / SERVO_COUNTS_PER_REV,
-                  manualTargetFinishDir_ == WindDir::CW ? "CW" : "CCW");
-#endif
+    beginManualTargetFinishing(remCounts, actualRpm);
   }
 
   const int16_t  tgt        = manualTargetSigned_;
@@ -634,46 +682,43 @@ void App::tickManualMode(uint32_t nowMs) {
       }
       break;
 
-    case ManualPhase::TargetBraking:
-      // Controlled deceleration — direction locked, no reverse correction.
-      if (nowMs - lastManualCmdMs_ >= MANUAL_COMMAND_UPDATE_MS) {
-        lastManualCmdMs_ = nowMs;
-        motor_.softStop();
-      }
-      if (motorStop) {
-        if (remCounts == 0 ||
-            remCounts <= static_cast<uint64_t>(FINAL_APPROACH_SKIP_COUNTS)) {
-          finishManualTarget();
-          break;
-        }
-        // Still short of target → same-direction low-speed F6 approach.
-        manualApproachIssued_ = false;
-        manualPhase_ = ManualPhase::TargetApproach;
-#if WIND_TARGET_DEBUG
-        Serial.printf("[MANUAL] target approach dir=%s rem=%.2f\n",
-                      manualTargetFinishDir_ == WindDir::CW ? "CW" : "CCW",
-                      static_cast<double>(remCounts) / SERVO_COUNTS_PER_REV);
-#endif
-      }
-      break;
+    case ManualPhase::TargetFinishing: {
+      // Continuous same-direction deceleration — NO softStop until final zone.
+      // NO restart. Direction locked. RPM monotonic non-increasing.
+      if (manualTargetReached_) break;
 
-    case ManualPhase::TargetApproach: {
-      // Low-speed F6 in locked winding direction ONLY. Never F4 / never reverse.
-      if (manualTargetReached_ || remCounts == 0) {
+      if (remCounts == 0 ||
+          remCounts <= static_cast<uint64_t>(MANUAL_FINISH_STOP_COMP_COUNTS)) {
         finishManualTarget();
         break;
       }
-      // Early forward stop compensation — reduces overshoot, never reverses.
-      if (remCounts <= static_cast<uint64_t>(FINAL_FORWARD_STOP_COMPENSATION_COUNTS)) {
-        finishManualTarget();
-        break;
+
+      uint16_t rpm = manualFinishRpmForRemaining(remCounts);
+      // Enforce monotonic non-increasing commanded RPM.
+      if (rpm > manualFinishCmdRpm_) {
+        rpm = manualFinishCmdRpm_;
       }
+      manualFinishCmdRpm_ = rpm;
+
       if (nowMs - lastManualCmdMs_ >= MANUAL_COMMAND_UPDATE_MS) {
         lastManualCmdMs_ = nowMs;
         motor_.setDirection(manualTargetFinishDir_);
-        motor_.commandFinalApproach(manualTargetFinishDir_);
-        manualApproachIssued_ = true;
+        const bool cw = (manualTargetFinishDir_ == WindDir::CW);
+        if (rpm == 0) {
+          motor_.softStop();
+        } else {
+          servo_.speedRun(cw, rpm, SERVO_INTERNAL_ACC);
+        }
       }
+
+#if WIND_TARGET_DEBUG
+      if (nowMs - lastManualFinishLogMs_ >= 200) {
+        lastManualFinishLogMs_ = nowMs;
+        Serial.printf("[MANUAL] finishRPM=%u rem=%.2f\n",
+                      static_cast<unsigned>(manualFinishCmdRpm_),
+                      static_cast<double>(remCounts) / SERVO_COUNTS_PER_REV);
+      }
+#endif
       break;
     }
 
@@ -847,20 +892,31 @@ void App::render(uint32_t nowMs) {
 
     // ── MANUAL MODE ───────────────────────────────────────────────
     case AppState::ManualMode: {
-      // Derive display direction from signed target.
+      // Direction: during auto-finish show locked finish dir; else user setpoint.
       const char* dirStr;
-      if (manualTargetSigned_ > 0)      dirStr = "CW";
-      else if (manualTargetSigned_ < 0)  dirStr = "CCW";
-      else                               dirStr = tr(lang_, StrId::Stop);
+      if (manualPhase_ == ManualPhase::TargetFinishing ||
+          manualPhase_ == ManualPhase::TargetStopping) {
+        dirStr = (manualTargetFinishDir_ == WindDir::CW) ? "CW" : "CCW";
+      } else if (manualTargetSigned_ > 0) {
+        dirStr = "CW";
+      } else if (manualTargetSigned_ < 0) {
+        dirStr = "CCW";
+      } else {
+        dirStr = tr(lang_, StrId::Stop);
+      }
 
       // Line 0: "TRYB RECZNY       CW" (20 chars)
       char l0[21];
       snprintf(l0, sizeof l0, "%-14s%6s", tr(lang_, StrId::ManualTitle), dirStr);
       ui_.setLine(0, l0);
 
-      // Line 1: "UST:       850 RPM  " (SET)
+      // Line 1: UST — during auto-finish show controller RPM, else user setpoint.
       char l1[21];
-      snprintf(l1, sizeof l1, "%-5s%9u RPM", tr(lang_, StrId::ManualSet), absClamped(manualTargetSigned_));
+      const uint16_t ustRpm =
+          (manualPhase_ == ManualPhase::TargetFinishing) ? manualFinishCmdRpm_
+          : (manualPhase_ == ManualPhase::TargetStopping) ? 0u
+          : absClamped(manualTargetSigned_);
+      snprintf(l1, sizeof l1, "%-5s%9u RPM", tr(lang_, StrId::ManualSet), ustRpm);
       ui_.setLine(1, l1);
 
       // Line 2: "AKT:       847 RPM  " (ACTUAL)
@@ -1073,13 +1129,11 @@ void App::handleInput(uint32_t nowMs) {
       }
 
       // Manual: signed RPM with dedicated human-speed accel + zero clamp.
-      // During target braking/approach, encoder must not re-accelerate.
+      // During automatic target finishing, encoder must not change speed/dir.
       case AppState::ManualMode: {
         if (manualExitPending_) break;
-        if (manualPhase_ == ManualPhase::TargetBraking ||
-            manualPhase_ == ManualPhase::TargetApproach ||
-            manualPhase_ == ManualPhase::TargetStopping) {
-          break;  // turn-limit safety owns the motor
+        if (manualInAutoFinish()) {
+          break;  // auto finish owns the motor
         }
         const int step = manualRpmStep(det);
         int32_t next = static_cast<int32_t>(manualTargetSigned_) + dir * step;
@@ -1208,10 +1262,14 @@ void App::handleInput(uint32_t nowMs) {
         onManualTurnsSetupClick(); break;
 
       case AppState::ManualMode:
-        // Click = controlled stop (target → 0). Do NOT exit / reset turns.
-        // Also allowed during target braking to request earlier stop (already 0).
+        // Click = controlled stop. During auto-finish → immediate FINAL STOP.
+        // Do NOT exit / reset turns.
         if (!manualExitPending_) {
-          manualTargetSigned_ = 0;
+          if (manualPhase_ == ManualPhase::TargetFinishing && !manualTargetReached_) {
+            finishManualTarget();
+          } else {
+            manualTargetSigned_ = 0;
+          }
         }
         break;
 
