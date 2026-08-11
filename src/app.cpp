@@ -4,21 +4,11 @@
 #include <Arduino.h>
 #include <stdio.h>
 #include <string.h>
+#include <stdlib.h>
 
 // ─────────────────────────────────────────────────────────────────────────────
-// Acceleration helpers — separate policy from raw encoder events
+// UI acceleration policy helpers — NEVER called inside the input module
 // ─────────────────────────────────────────────────────────────────────────────
-
-int App::accelStepMenu(EncSpeed spd) const {
-  // Menus: 1 normally, 2 only at very fast rotation (long lists).
-  return (spd == EncSpeed::VeryFast) ? MENU_ACCEL_FAST : MENU_ACCEL_SLOW;
-}
-
-int App::accelStepDigit(EncSpeed spd) const {
-  // Single-digit editor: always 1, wraps 0–9. Speed irrelevant for digit.
-  (void)spd;
-  return 1;
-}
 
 int App::accelStepManualRpm(EncSpeed spd) const {
   switch (spd) {
@@ -30,13 +20,8 @@ int App::accelStepManualRpm(EncSpeed spd) const {
 }
 
 int App::accelStepName(EncSpeed spd) const {
-  // Character list: slow=1, faster=2–3. Never huge jumps.
-  switch (spd) {
-    case EncSpeed::Fast:     return 3;
-    case EncSpeed::VeryFast: return 5;
-    case EncSpeed::Medium:   return 2;
-    default:                 return 1;
-  }
+  // Very conservative: only 2 chars max, and only after a sustained streak.
+  return (spd == EncSpeed::VeryFast) ? NAME_ACCEL_MAX : 1;
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -44,14 +29,56 @@ int App::accelStepName(EncSpeed spd) const {
 // ─────────────────────────────────────────────────────────────────────────────
 
 void App::setState(AppState s) {
-  state_ = s;
-  lastLcdMs_ = 0;
+  state_    = s;
+  lastLcdMs_= 0;  // force immediate redraw
 }
 
 void App::startCountdown() {
-  countdown_ = COUNTDOWN_SECONDS;
-  countdownAtMs_ = millis();
+  countdown_    = COUNTDOWN_SECONDS;
+  countdownAtMs_= millis();
   setState(AppState::Countdown);
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Preset name buffer helpers
+// ─────────────────────────────────────────────────────────────────────────────
+
+// Init nameBuf_ from src: pad unused positions with spaces, always terminate.
+void App::initNameBuf(const char* src) {
+  for (int i = 0; i < PRESET_NAME_LEN; i++) {
+    nameBuf_[i] = (src && src[i] != '\0') ? src[i] : ' ';
+  }
+  nameBuf_[PRESET_NAME_LEN] = '\0';  // permanent terminator
+}
+
+void App::savePresetName() {
+  // Trim trailing spaces before saving.
+  char trimmed[PRESET_NAME_LEN + 1];
+  memcpy(trimmed, nameBuf_, PRESET_NAME_LEN);
+  trimmed[PRESET_NAME_LEN] = '\0';
+  int last = PRESET_NAME_LEN - 1;
+  while (last >= 0 && trimmed[last] == ' ') {
+    trimmed[last--] = '\0';
+  }
+  if (last < 0) {  // all spaces → use default
+    strncpy(trimmed, "PRESET", PRESET_NAME_LEN);
+    trimmed[PRESET_NAME_LEN] = '\0';
+  }
+
+  PresetRecord rec{};
+  strncpy(rec.name, trimmed, PRESET_NAME_LEN);
+  rec.name[PRESET_NAME_LEN] = '\0';
+  rec.program   = draft_;
+  rec.program.targetRpm = clampRpm(rec.program.targetRpm);
+  rec.valid = 1;
+
+  if (saveAsNew_)         presets_.saveNew(rec);
+  else if (editingPreset_) presets_.update(editingPresetIndex_, rec);
+
+  saveAsNew_    = false;
+  editingPreset_= false;
+  menuIndex_    = 0;
+  setState(AppState::PresetList);
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -67,14 +94,14 @@ void App::begin() {
   ui_.drawBootProgress(5);
   input_.begin();
   presets_.begin();
-  lang_ = presets_.loadLanguage();
+  lang_      = presets_.loadLanguage();
   servo_.begin();
   motor_.begin(&servo_);
   winding_.begin(&motor_);
 
-  draft_ = WindingProgram{};
+  draft_    = WindingProgram{};
   bootStep_ = 0;
-  bootStepMs_ = millis();
+  bootStepMs_= millis();
   setState(AppState::Boot);
 }
 
@@ -104,31 +131,31 @@ void App::handleBoot(uint32_t nowMs) {
     ui_.setLine(2, "");
     ui_.setLine(3, "");
     delay(300);
-    menuIndex_ = 0;
+    menuIndex_  = 0;
     menuWindow_ = 0;
     setState(AppState::MainMenu);
   }
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// AUTO mode (target-based winding setup)
+// AUTO mode (target-based winding)
 // ─────────────────────────────────────────────────────────────────────────────
 
 void App::enterAutoEdit() {
-  draft_ = WindingProgram{};
+  draft_     = WindingProgram{};
   editField_ = 0;
-  digitPos_ = 0;
+  digitPos_  = 0;
   editingPreset_ = false;
-  saveAsNew_ = false;
+  saveAsNew_     = false;
   setState(AppState::AutoEdit);
 }
 
 void App::enterPresetEditNew() {
-  draft_ = WindingProgram{};
+  draft_     = WindingProgram{};
   editField_ = 0;
-  digitPos_ = 0;
+  digitPos_  = 0;
   editingPreset_ = false;
-  saveAsNew_ = true;
+  saveAsNew_     = true;
   setState(AppState::PresetEdit);
 }
 
@@ -136,13 +163,12 @@ void App::enterPresetEditExisting() {
   PresetRecord p{};
   if (!presets_.get(presetIndex_, p)) { setState(AppState::PresetList); return; }
   draft_ = p.program;
-  strncpy(nameBuf_, p.name, PRESET_NAME_LEN);
-  nameBuf_[PRESET_NAME_LEN] = 0;
-  editField_ = 0;
-  digitPos_ = 0;
-  editingPreset_ = true;
+  initNameBuf(p.name);
+  editField_          = 0;
+  digitPos_           = 0;
+  editingPreset_      = true;
   editingPresetIndex_ = presetIndex_;
-  saveAsNew_ = false;
+  saveAsNew_          = false;
   setState(AppState::PresetEdit);
 }
 
@@ -173,18 +199,17 @@ void App::formatRpmDigits(char* out, unsigned n, bool blink) const {
 
 void App::formatRampTenthsDigits(char* out, unsigned n, uint16_t ms, bool blink) const {
   snprintf(out, n, "%0.1fs", ms / 1000.0f);
-  // Format is e.g. "02.0s" — blink the active tenths place.
+  // "02.0s" layout: index 0='0', 1='2', 2='.', 3='0', 4='s'
   if (blink && ((millis() / 400) & 1)) {
     int idx = -1;
-    if (digitPos_ == 0)      idx = 3;   // tenths of second
-    else if (digitPos_ == 1) idx = 1;   // seconds
-    else if (digitPos_ == 2) idx = 0;   // tens of seconds
+    if      (digitPos_ == 0) idx = 3;
+    else if (digitPos_ == 1) idx = 1;
+    else if (digitPos_ == 2) idx = 0;
     if (idx >= 0 && static_cast<unsigned>(idx) + 1 < n) out[idx] = '_';
   }
 }
 
 void App::adjustActiveDigit(int dir) {
-  // Bump the active digit of a number by dir (+1 or -1), wrapping 0–9.
   auto bumpDigit = [&](uint32_t& value, uint8_t place, uint32_t minVal, uint32_t maxVal) {
     uint32_t placeVal = 1;
     for (uint8_t i = 0; i < place; i++) placeVal *= 10;
@@ -197,46 +222,30 @@ void App::adjustActiveDigit(int dir) {
     if (value < minVal) value = minVal;
   };
 
-  if (editField_ == 0) {
-    uint32_t v = draft_.targetTurns;
-    bumpDigit(v, digitPos_, MIN_TURNS, MAX_TURNS);
-    draft_.targetTurns = clampTurns(v);
-  } else if (editField_ == 1) {
-    uint32_t v = draft_.targetRpm;
-    bumpDigit(v, digitPos_, MIN_WINDER_RPM, MAX_WINDER_RPM);
-    draft_.targetRpm = clampRpm(v);
-  } else if (editField_ == 3 || editField_ == 5) {
+  if      (editField_ == 0) { uint32_t v = draft_.targetTurns; bumpDigit(v, digitPos_, MIN_TURNS, MAX_TURNS); draft_.targetTurns = clampTurns(v); }
+  else if (editField_ == 1) { uint32_t v = draft_.targetRpm;   bumpDigit(v, digitPos_, MIN_WINDER_RPM, MAX_WINDER_RPM); draft_.targetRpm = clampRpm(v); }
+  else if (editField_ == 3 || editField_ == 5) {
     uint16_t& ms = (editField_ == 3) ? draft_.rampUpMs : draft_.rampDownMs;
     uint32_t tenths = ms / 100;
-    bumpDigit(tenths, digitPos_, RAMP_TIME_MIN_MS / 100, RAMP_TIME_MAX_MS / 100);
+    bumpDigit(tenths, digitPos_, RAMP_TIME_MIN_MS/100, RAMP_TIME_MAX_MS/100);
     ms = clampRampMs(tenths * 100);
-  } else if (editField_ == 2) {
-    draft_.rampUpType =
-        (draft_.rampUpType == RampType::SCurve) ? RampType::Linear : RampType::SCurve;
-  } else if (editField_ == 4) {
-    draft_.rampDownType =
-        (draft_.rampDownType == RampType::SCurve) ? RampType::Linear : RampType::SCurve;
-  } else if (editField_ == 6) {
-    draft_.direction = (draft_.direction == WindDir::CW) ? WindDir::CCW : WindDir::CW;
   }
+  else if (editField_ == 2) draft_.rampUpType   = (draft_.rampUpType   == RampType::SCurve) ? RampType::Linear : RampType::SCurve;
+  else if (editField_ == 4) draft_.rampDownType = (draft_.rampDownType == RampType::SCurve) ? RampType::Linear : RampType::SCurve;
+  else if (editField_ == 6) draft_.direction    = (draft_.direction    == WindDir::CW) ? WindDir::CCW : WindDir::CW;
 }
 
 void App::onEditClick() {
   const uint8_t digs = digitsForField(editField_);
   if (digs > 0) {
-    digitPos_++;
-    if (digitPos_ >= digs) {
-      digitPos_ = 0;
-      editField_++;
-    }
+    if (++digitPos_ >= digs) { digitPos_ = 0; editField_++; }
     return;
   }
-  // Non-digit field: click just advances.
   if (editField_ < 7) { editField_++; digitPos_ = 0; return; }
-  // Field 7 = Start / Save.
+  // Field 7 = Start / Save
   if (state_ == AppState::PresetEdit) {
     namePos_ = 0;
-    if (!editingPreset_) { strncpy(nameBuf_, "PRESET", PRESET_NAME_LEN); nameBuf_[PRESET_NAME_LEN] = 0; }
+    if (!editingPreset_) initNameBuf("PRESET");
     setState(AppState::PresetName);
   } else {
     setState(AppState::StartConfirm);
@@ -248,73 +257,124 @@ void App::onEditClick() {
 // ─────────────────────────────────────────────────────────────────────────────
 
 void App::enterManualMode() {
-  manualSetRpm_ = 0;
-  manualDir_ = WindDir::CW;
-  manualRunning_ = false;
-  manualStopping_ = false;
-  motor_.setDirection(WindDir::CW);
-  motor_.prepareForWinding();  // enable + mode set
-  // Capture encoder baseline for this session.
-  manualEncBaseline_ = motor_.encoder();
-  manualTurns_.beginJob(manualEncBaseline_, 0 /*no target*/, WindDir::CW);
+  manualTargetSigned_  = 0;
+  manualPhase_         = ManualPhase::Idle;
+  manualMotorDir_      = WindDir::CW;
+  manualExitPending_   = false;
+  manualTravelCounts_  = 0;
+
+  motor_.prepareForWinding();
+
+  manualEncStart_ = motor_.encoder();
+  manualEncPrev_  = manualEncStart_;
+
   lastManualCmdMs_ = 0;
   lastManualTelMs_ = 0;
   setState(AppState::ManualMode);
 }
 
-void App::manualChangeDirection(WindDir newDir) {
-  if (newDir == manualDir_) return;
-  if (manualSetRpm_ > 0) return;  // safety: only change dir when stopped
-  manualDir_ = newDir;
-  motor_.setDirection(newDir);
-  // Reset turn counter baseline on direction change.
-  manualEncBaseline_ = motor_.encoder();
-  manualTurns_.beginJob(manualEncBaseline_, 0, newDir);
+// Returns |manualTargetSigned_| clamped to MAX_WINDER_RPM
+static uint16_t absClamped(int16_t v) {
+  int32_t a = v < 0 ? -static_cast<int32_t>(v) : static_cast<int32_t>(v);
+  if (a > MAX_WINDER_RPM) a = MAX_WINDER_RPM;
+  return static_cast<uint16_t>(a);
 }
 
 void App::tickManualMode(uint32_t nowMs) {
-  // Telemetry.
+  // ── Telemetry ────────────────────────────────────────────────────
   if (nowMs - lastManualTelMs_ >= POSITION_POLL_MS) {
     lastManualTelMs_ = nowMs;
     motor_.pollTelemetry(nowMs);
-    manualTurns_.update(motor_.encoder());
+
+    // Accumulate absolute travel (ignoring direction).
+    const int64_t encNow  = motor_.encoder();
+    const int64_t delta   = encNow - manualEncPrev_;
+    const int64_t absDelta= (delta < 0) ? -delta : delta;
+    // Guard against uint32 overflow (unlikely during one session).
+    if (manualTravelCounts_ + static_cast<uint32_t>(absDelta) > manualTravelCounts_) {
+      manualTravelCounts_ += static_cast<uint32_t>(absDelta);
+    }
+    manualEncPrev_ = encNow;
   }
 
-  const uint16_t actualRpm = motor_.actualRpmAbs();
+  const uint16_t actualRpm  = motor_.actualRpmAbs();
+  const bool     motorStop  = (actualRpm <= MANUAL_STOPPED_RPM);
+  const int16_t  tgt        = manualTargetSigned_;
+  const bool     tgtCw      = (tgt > 0);
+  const bool     tgtStop    = (tgt == 0);
 
-  // Handle stop completion.
-  if (manualStopping_ && actualRpm <= MANUAL_STOPPED_RPM) {
-    manualStopping_ = false;
-    manualRunning_ = false;
-    manualSetRpm_ = 0;
+  // ── Exit pending: stop first, then leave ─────────────────────────
+  if (manualExitPending_) {
+    if (motorStop) {
+      motor_.idleSafe();
+      manualExitPending_ = false;
+      setState(AppState::MainMenu);
+      return;
+    }
+    // Keep decelerating.
+    if (nowMs - lastManualCmdMs_ >= MANUAL_COMMAND_UPDATE_MS) {
+      lastManualCmdMs_ = nowMs;
+      servo_.speedStop(SERVO_SOFT_STOP_ACC);
+    }
+    return;
   }
 
-  // Push speed command.
-  if (!manualStopping_ && nowMs - lastManualCmdMs_ >= MANUAL_COMMAND_UPDATE_MS) {
-    lastManualCmdMs_ = nowMs;
-    const bool cw = (manualDir_ == WindDir::CW);
-    if (manualSetRpm_ == 0) {
-      if (actualRpm > MANUAL_STOPPED_RPM) {
+  // ── Manual FSM ───────────────────────────────────────────────────
+  switch (manualPhase_) {
+
+    case ManualPhase::Idle:
+      if (!tgtStop) {
+        manualMotorDir_ = tgtCw ? WindDir::CW : WindDir::CCW;
+        motor_.setDirection(manualMotorDir_);
+        manualPhase_ = ManualPhase::Running;
+      }
+      break;
+
+    case ManualPhase::Running: {
+      // Check if direction changed
+      const bool runningCw = (manualMotorDir_ == WindDir::CW);
+      if (!tgtStop && (tgtCw != runningCw)) {
+        // User requested opposite direction — start braking.
+        manualPhase_ = ManualPhase::Braking;
+      } else if (tgtStop) {
+        manualPhase_ = ManualPhase::Braking;
+      } else {
+        // Same direction: push commanded RPM.
+        if (nowMs - lastManualCmdMs_ >= MANUAL_COMMAND_UPDATE_MS) {
+          lastManualCmdMs_ = nowMs;
+          servo_.speedRun(runningCw, absClamped(tgt), SERVO_INTERNAL_ACC);
+        }
+      }
+      break;
+    }
+
+    case ManualPhase::Braking:
+      if (nowMs - lastManualCmdMs_ >= MANUAL_COMMAND_UPDATE_MS) {
+        lastManualCmdMs_ = nowMs;
         servo_.speedStop(SERVO_SOFT_STOP_ACC);
       }
-    } else {
-      servo_.speedRun(cw, manualSetRpm_, SERVO_INTERNAL_ACC);
-      manualRunning_ = true;
-    }
-  }
-}
+      if (motorStop) {
+        manualPhase_ = ManualPhase::Reversing;
+      }
+      break;
 
-void App::exitManualMode(bool immediate) {
-  if (immediate || (motor_.actualRpmAbs() <= MANUAL_STOPPED_RPM && manualSetRpm_ == 0)) {
-    motor_.idleSafe();
-    setState(AppState::MainMenu);
-  } else {
-    // Ramp to 0 and then exit.
-    manualSetRpm_ = 0;
-    manualStopping_ = true;
-    // Will exit on next tick when stopped — set a flag by resetting to go back.
-    // Handled in tickManualMode transition: when stopped, check pending exit.
-    // Simpler: just wait via the state machine (remain in ManualMode until stopped).
+    case ManualPhase::Reversing:
+      if (tgtStop) {
+        manualPhase_ = ManualPhase::Idle;
+      } else {
+        // Switch physical direction now that motor is stopped.
+        manualMotorDir_ = tgtCw ? WindDir::CW : WindDir::CCW;
+        motor_.setDirection(manualMotorDir_);
+        manualPhase_ = ManualPhase::Running;
+        // Force immediate command next tick.
+        lastManualCmdMs_ = 0;
+      }
+      break;
+  }
+
+  // If somehow stopped with no target, ensure idle.
+  if (manualPhase_ == ManualPhase::Running && tgtStop) {
+    manualPhase_ = ManualPhase::Braking;
   }
 }
 
@@ -324,16 +384,37 @@ void App::exitManualMode(bool immediate) {
 
 static void clampMenuWindow(uint8_t sel, uint8_t count, uint8_t& window) {
   if (count == 0) { window = 0; return; }
-  if (sel < window) window = sel;
-  if (sel >= window + 4) window = sel - 3;
-  if (count <= 4) window = 0;
+  if (sel < window)        window = sel;
+  if (sel >= window + 4)   window = sel - 3;
+  if (count <= 4)          window = 0;
+}
+
+// Safe: builds a 20-char display line without touching nameBuf_.
+// Shows cursor position via a separate indicator line.
+static void buildNameDisplayLine(const char* buf, int pos, char* out) {
+  // out must be at least 22 bytes (20 chars + '[', ']', '\0')
+  out[0] = '[';
+  for (int i = 0; i < PRESET_NAME_LEN; i++) {
+    out[1 + i] = buf[i];  // buf is space-padded, always printable
+  }
+  out[1 + PRESET_NAME_LEN] = ']';
+  out[2 + PRESET_NAME_LEN] = '\0';
+  // Truncate to 20 chars for LCD.
+  out[20] = '\0';
+  (void)pos;
+}
+
+// Builds a 20-char cursor-indicator line: spaces + '^' at position pos+1 (offset by '[').
+static void buildNameCursorLine(int pos, char* out) {
+  for (int i = 0; i < 20; i++) out[i] = ' ';
+  out[20] = '\0';
+  const int col = 1 + pos;  // +1 for the leading '['
+  if (col >= 0 && col < 20) out[col] = '^';
 }
 
 void App::render(uint32_t nowMs) {
-  // Fast refresh for blinking digit editors; normal throttle elsewhere.
-  const bool isEditScreen =
-      (state_ == AppState::AutoEdit || state_ == AppState::PresetEdit);
-  const uint32_t refreshMs = isEditScreen ? 100u : LCD_UPDATE_MS;
+  const bool isEdit = (state_ == AppState::AutoEdit || state_ == AppState::PresetEdit);
+  const uint32_t refreshMs = isEdit ? 100u : LCD_UPDATE_MS;
   if (nowMs - lastLcdMs_ < refreshMs && state_ != AppState::Countdown) return;
   lastLcdMs_ = nowMs;
 
@@ -353,10 +434,9 @@ void App::render(uint32_t nowMs) {
 
     // ── SETTINGS ──────────────────────────────────────────────────
     case AppState::Settings: {
-      const char* items[3] = {
-          tr(lang_, StrId::Language),
-          tr(lang_, StrId::Diagnostics),
-          tr(lang_, StrId::Back)};
+      const char* items[3] = {tr(lang_, StrId::Language),
+                              tr(lang_, StrId::Diagnostics),
+                              tr(lang_, StrId::Back)};
       clampMenuWindow(menuIndex_, 3, menuWindow_);
       ui_.drawMenu(lang_, items, 3, menuIndex_, menuWindow_);
       break;
@@ -366,36 +446,34 @@ void App::render(uint32_t nowMs) {
       ui_.drawMenu(lang_, items, 2, menuIndex_, 0);
       break;
     }
-    case AppState::Diagnostics: {
+    case AppState::Diagnostics:
       motor_.pollTelemetry(nowMs);
       ui_.drawDiagnostics(lang_, motor_.alarmOk(),
                           motor_.encoderOk() || servo_.failStreak() == 0,
                           motor_.actualRpmAbs(), motor_.encoder(), motor_.alarmStatus());
       break;
-    }
 
-    // ── AUTO EDIT (target-based setup) ────────────────────────────
+    // ── AUTO EDIT ─────────────────────────────────────────────────
     case AppState::AutoEdit:
     case AppState::PresetEdit: {
-      const uint8_t fieldCount = 8;
+      const uint8_t FC = 8;
       uint8_t top = (editField_ < 3) ? 0 : static_cast<uint8_t>(editField_ - 2);
-      if (top > fieldCount - 4) top = fieldCount - 4;
+      if (top > FC - 4) top = FC - 4;
       for (uint8_t row = 0; row < 4; row++) {
         const uint8_t f = static_cast<uint8_t>(top + row);
         char val[16]; val[0] = 0;
         const char* label = "";
         const bool sel = (editField_ == f);
         switch (f) {
-          case 0: label = tr(lang_, StrId::Turns);    formatTurnsDigits(val, sizeof val, sel);  break;
-          case 1: label = tr(lang_, StrId::Rpm);      formatRpmDigits(val, sizeof val, sel);    break;
-          case 2: label = tr(lang_, StrId::RampUp);   formatRampType(lang_, draft_.rampUpType, val, sizeof val);  break;
-          case 3: label = tr(lang_, StrId::UpTime);   formatRampTenthsDigits(val, sizeof val, draft_.rampUpMs, sel);   break;
+          case 0: label = tr(lang_, StrId::Turns);    formatTurnsDigits(val, sizeof val, sel);   break;
+          case 1: label = tr(lang_, StrId::Rpm);      formatRpmDigits(val, sizeof val, sel);     break;
+          case 2: label = tr(lang_, StrId::RampUp);   formatRampType(lang_, draft_.rampUpType, val, sizeof val); break;
+          case 3: label = tr(lang_, StrId::UpTime);   formatRampTenthsDigits(val, sizeof val, draft_.rampUpMs, sel); break;
           case 4: label = tr(lang_, StrId::RampDown); formatRampType(lang_, draft_.rampDownType, val, sizeof val); break;
-          case 5: label = tr(lang_, StrId::DownTime); formatRampTenthsDigits(val, sizeof val, draft_.rampDownMs, sel);  break;
+          case 5: label = tr(lang_, StrId::DownTime); formatRampTenthsDigits(val, sizeof val, draft_.rampDownMs, sel); break;
           case 6: label = tr(lang_, StrId::Direction);formatDir(lang_, draft_.direction, val, sizeof val); break;
           default:
-            label = (state_ == AppState::PresetEdit)
-                        ? tr(lang_, StrId::Save) : tr(lang_, StrId::Start);
+            label = (state_ == AppState::PresetEdit) ? tr(lang_, StrId::Save) : tr(lang_, StrId::Start);
             break;
         }
         char line[21];
@@ -408,29 +486,38 @@ void App::render(uint32_t nowMs) {
 
     // ── MANUAL MODE ───────────────────────────────────────────────
     case AppState::ManualMode: {
-      char dBuf[4]; formatDir(lang_, manualDir_, dBuf, sizeof dBuf);
-      // Line 0: MANUAL          CW
-      char l0[21]; snprintf(l0, sizeof l0, "%-12s%8s", tr(lang_, StrId::ManualMode), dBuf);
+      // Derive display direction from signed target.
+      const char* dirStr;
+      if (manualTargetSigned_ > 0)      dirStr = "CW";
+      else if (manualTargetSigned_ < 0)  dirStr = "CCW";
+      else                               dirStr = tr(lang_, StrId::Stop);
+
+      // Line 0: "TRYB RECZNY       CW" (20 chars)
+      char l0[21];
+      snprintf(l0, sizeof l0, "%-14s%6s", tr(lang_, StrId::ManualTitle), dirStr);
       ui_.setLine(0, l0);
-      // Line 1: SET:  1200 RPM
-      char l1[21]; snprintf(l1, sizeof l1, "%-6s%4u RPM", tr(lang_, StrId::ManualSet), manualSetRpm_);
+
+      // Line 1: "UST:       850 RPM  " (SET)
+      char l1[21];
+      snprintf(l1, sizeof l1, "%-5s%9u RPM", tr(lang_, StrId::ManualSet), absClamped(manualTargetSigned_));
       ui_.setLine(1, l1);
-      // Line 2: ACT:  1197 RPM
-      char l2[21]; snprintf(l2, sizeof l2, "%-6s%4u RPM", tr(lang_, StrId::ManualAct), motor_.actualRpmAbs());
+
+      // Line 2: "AKT:       847 RPM  " (ACTUAL)
+      char l2[21];
+      snprintf(l2, sizeof l2, "%-5s%9u RPM", tr(lang_, StrId::ManualAct), motor_.actualRpmAbs());
       ui_.setLine(2, l2);
-      // Line 3: context hint
-      const bool stopped = (manualSetRpm_ == 0 && !manualStopping_);
-      if (stopped) {
-        ui_.setLine(3, tr(lang_, StrId::ManualClickDir));
-      } else {
-        ui_.setLine(3, tr(lang_, StrId::ManualClickStop));
-      }
+
+      // Line 3: "ZWOJE:        1234  "
+      const uint32_t travelTurns = manualTravelCounts_ / static_cast<uint32_t>(SERVO_COUNTS_PER_REV);
+      char l3[21];
+      snprintf(l3, sizeof l3, "%-7s%13lu", tr(lang_, StrId::ManualTurns), static_cast<unsigned long>(travelTurns));
+      ui_.setLine(3, l3);
       break;
     }
 
     // ── PRESET LIST ───────────────────────────────────────────────
     case AppState::PresetList: {
-      const uint8_t cnt = presets_.count();
+      const uint8_t cnt   = presets_.count();
       const uint8_t total = static_cast<uint8_t>(cnt + 2);
       char names[34][21];
       const char* items[34];
@@ -456,24 +543,34 @@ void App::render(uint32_t nowMs) {
       ui_.drawMenu(lang_, items, 5, actionIndex_, menuWindow_);
       break;
     }
+
+    // ── PRESET NAME EDITOR ────────────────────────────────────────
     case AppState::PresetName: {
-      char line[21]; snprintf(line, sizeof line, "NAME:%s", nameBuf_);
-      if (namePos_ >= 0 && namePos_ < PRESET_NAME_LEN) {
-        const size_t pos = 5 + static_cast<size_t>(namePos_);
-        if (pos < 20 && ((nowMs / 400) & 1)) line[pos] = '_';
-      }
-      ui_.setLine(0, tr(lang_, StrId::Rename));
-      ui_.setLine(1, line);
-      ui_.setLine(2, "ROT=CHAR CLICK=NEXT");
-      ui_.setLine(3, "HOLD=SAVE");
+      // Line 0: header
+      ui_.setLine(0, tr(lang_, StrId::PresetName));
+
+      // Line 1: "[STRAT NECK  ]"  — built from fixed-width buffer, NO terminator hack
+      char dispLine[22];   // 1 + PRESET_NAME_LEN + 1 + '\0' = 15 max; LCD pads to 20
+      buildNameDisplayLine(nameBuf_, namePos_, dispLine);
+      ui_.setLine(1, dispLine);
+
+      // Line 2: cursor indicator
+      char cursorLine[21];
+      buildNameCursorLine(namePos_, cursorLine);
+      ui_.setLine(2, cursorLine);
+
+      // Line 3: instructions
+      ui_.setLine(3, tr(lang_, StrId::HoldSave));
       break;
     }
+
     case AppState::PresetDeleteConfirm: {
       ui_.setLine(0, tr(lang_, StrId::ConfirmDelete));
       char line[21];
       snprintf(line, sizeof line, "%c%s  %c%s",
                deleteYes_  ? '>' : ' ', tr(lang_, StrId::Yes),
                !deleteYes_ ? '>' : ' ', tr(lang_, StrId::No));
+      line[20] = '\0';
       ui_.setLine(1, line);
       ui_.setLine(2, "");
       ui_.setLine(3, tr(lang_, StrId::HoldBack));
@@ -504,14 +601,18 @@ void App::render(uint32_t nowMs) {
 
 void App::handleInput(uint32_t nowMs) {
   (void)nowMs;
-
-  const EncDetent det = input_.takeDetent();
+  const EncDetent  det = input_.takeDetent();
   const ButtonEvent btn = input_.takeButton();
-  const int dir = det.dir;
+  const int         dir = det.dir;
 
-  // ── ROTATION ──────────────────────────────────────────────────
+  // Character set for name editor.
+  static const char kCharSet[] = "ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789 -_";
+  static const int  kCharN     = 39;
+
+  // ── ROTATION ─────────────────────────────────────────────────────
   if (dir != 0) {
     switch (state_) {
+      // Menus with NO acceleration: always 1 step.
       case AppState::MainMenu:
         if (dir > 0) menuIndex_ = static_cast<uint8_t>((menuIndex_ + 1) % 4);
         else         menuIndex_ = (menuIndex_ == 0) ? 3 : menuIndex_ - 1;
@@ -523,13 +624,6 @@ void App::handleInput(uint32_t nowMs) {
       case AppState::Language:
         menuIndex_ = (menuIndex_ == 0) ? 1 : 0;
         break;
-      case AppState::PresetList: {
-        const uint8_t total = static_cast<uint8_t>(presets_.count() + 2);
-        const int step = accelStepMenu(det.speed);
-        if (dir > 0) menuIndex_ = static_cast<uint8_t>((menuIndex_ + step) % total);
-        else         menuIndex_ = static_cast<uint8_t>((menuIndex_ + total - step % total) % total);
-        break;
-      }
       case AppState::PresetActions:
         if (dir > 0) actionIndex_ = static_cast<uint8_t>((actionIndex_ + 1) % 5);
         else         actionIndex_ = (actionIndex_ == 0) ? 4 : actionIndex_ - 1;
@@ -537,41 +631,69 @@ void App::handleInput(uint32_t nowMs) {
       case AppState::PresetDeleteConfirm:
         deleteYes_ = !deleteYes_;
         break;
-      case AppState::AutoEdit:
-      case AppState::PresetEdit:
-        adjustActiveDigit(dir * accelStepDigit(det.speed));
-        break;
-      case AppState::PresetName: {
-        const int step = accelStepName(det.speed);
-        const char* set = "ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789 _";
-        const int n = 38;
-        char c = nameBuf_[namePos_];
-        if (c == 0) c = 'A';
-        int idx = 0;
-        for (int i = 0; i < n; i++) { if (set[i] == c) { idx = i; break; } }
-        idx = (idx + (dir > 0 ? step : n - step % n)) % n;
-        nameBuf_[namePos_] = set[idx];
-        if (namePos_ + 1 <= PRESET_NAME_LEN) nameBuf_[namePos_ + 1] = 0;
+
+      // Preset list: mild acceleration for long lists.
+      case AppState::PresetList: {
+        const uint8_t total = static_cast<uint8_t>(presets_.count() + 2);
+        // Mild accel: x2 max, only at VeryFast.
+        const int step = (det.speed == EncSpeed::VeryFast) ? PRESET_LIST_ACCEL_MAX : 1;
+        if (dir > 0) menuIndex_ = static_cast<uint8_t>((menuIndex_ + step) % total);
+        else {
+          const int back = (total - step % total) % total;
+          menuIndex_ = static_cast<uint8_t>((menuIndex_ + back) % total);
+        }
         break;
       }
+
+      // Digit editor: always exactly 1 (no accel).
+      case AppState::AutoEdit:
+      case AppState::PresetEdit:
+        adjustActiveDigit(dir);  // step=1, wraps 0-9
+        break;
+
+      // Preset name: conservative acceleration.
+      case AppState::PresetName: {
+        const int step = accelStepName(det.speed);
+        char c = nameBuf_[namePos_];
+        int idx = 0;
+        for (int i = 0; i < kCharN; i++) { if (kCharSet[i] == c) { idx = i; break; } }
+        if (dir > 0) idx = (idx + step)               % kCharN;
+        else         idx = (idx - step % kCharN + kCharN) % kCharN;
+        nameBuf_[namePos_] = kCharSet[idx];
+        // nameBuf_[PRESET_NAME_LEN] stays '\0' permanently — never touched here.
+        break;
+      }
+
+      // Manual: signed RPM with zero-crossing clamp.
       case AppState::ManualMode: {
-        // Direction reversal guard: only change RPM, never reverse directly.
+        if (manualExitPending_) break;  // encoder frozen while exiting
         const int step = accelStepManualRpm(det.speed);
-        int32_t next = static_cast<int32_t>(manualSetRpm_) + dir * step;
-        if (next < 0) next = 0;
-        if (next > MAX_WINDER_RPM) next = MAX_WINDER_RPM;
-        if (next > 0 && manualStopping_) next = 0;  // stay 0 while stopping
-        manualSetRpm_ = static_cast<uint16_t>(next);
+        int32_t next = static_cast<int32_t>(manualTargetSigned_) + dir * step;
+
+        // Clamp to valid range.
+        if (next > static_cast<int32_t>(MAX_WINDER_RPM))   next =  static_cast<int32_t>(MAX_WINDER_RPM);
+        if (next < -static_cast<int32_t>(MAX_WINDER_RPM))  next = -static_cast<int32_t>(MAX_WINDER_RPM);
+
+        // Zero-crossing: if step would have crossed zero, stop at zero first.
+        const bool prevPos  = (manualTargetSigned_ > 0);
+        const bool prevNeg  = (manualTargetSigned_ < 0);
+        const bool nextPos  = (next > 0);
+        const bool nextNeg  = (next < 0);
+        if ((prevPos && nextNeg) || (prevNeg && nextPos)) {
+          next = 0;  // clamp at zero; user must apply another detent to cross
+        }
+
+        manualTargetSigned_ = static_cast<int16_t>(next);
         break;
       }
       default: break;
     }
   }
 
-  // ── LONG PRESS ────────────────────────────────────────────────
+  // ── LONG PRESS ───────────────────────────────────────────────────
   if (btn == ButtonEvent::LongPress) {
     switch (state_) {
-      case AppState::MainMenu: break;  // top-level, nowhere to go
+      case AppState::MainMenu:   break;  // top-level, no parent
       case AppState::Settings:
       case AppState::Language:
       case AppState::Diagnostics:
@@ -584,44 +706,29 @@ void App::handleInput(uint32_t nowMs) {
       case AppState::PresetEdit:
       case AppState::PresetDeleteConfirm:
         menuIndex_ = 0; setState(AppState::PresetList); break;
-      case AppState::PresetName: {
-        // Save preset name.
-        nameBuf_[PRESET_NAME_LEN] = 0;
-        PresetRecord rec{};
-        strncpy(rec.name, nameBuf_, PRESET_NAME_LEN);
-        rec.name[PRESET_NAME_LEN] = 0;
-        rec.program = draft_;
-        rec.program.targetRpm = clampRpm(rec.program.targetRpm);
-        rec.valid = 1;
-        if (saveAsNew_)     presets_.saveNew(rec);
-        else if (editingPreset_) presets_.update(editingPresetIndex_, rec);
-        saveAsNew_ = editingPreset_ = false;
-        menuIndex_ = 0;
-        setState(AppState::PresetList);
-        break;
-      }
+      case AppState::PresetName:
+        savePresetName(); break;
       case AppState::StartConfirm:
       case AppState::Countdown:
         setState(editingPreset_ || saveAsNew_ ? AppState::PresetList : AppState::AutoEdit);
         break;
       case AppState::Winding:
-        winding_.requestPause();
-        break;
+        winding_.requestPause(); break;
       case AppState::Paused:
-        winding_.requestAbort();
-        break;
+        winding_.requestAbort(); break;
       case AppState::Complete:
       case AppState::Aborted:
         setState(AppState::MainMenu); break;
       case AppState::ManualMode:
-        // Stop motor then exit.
-        exitManualMode(false);
+        // Single long-press: stop + exit when safe.
+        manualTargetSigned_ = 0;
+        manualExitPending_  = true;
         break;
       default: break;
     }
   }
 
-  // ── SHORT CLICK ───────────────────────────────────────────────
+  // ── SHORT CLICK ──────────────────────────────────────────────────
   if (btn == ButtonEvent::Click) {
     switch (state_) {
       case AppState::BootError:
@@ -634,18 +741,13 @@ void App::handleInput(uint32_t nowMs) {
         if      (menuIndex_ == 0) enterAutoEdit();
         else if (menuIndex_ == 1) enterManualMode();
         else if (menuIndex_ == 2) { menuIndex_ = 0; setState(AppState::PresetList); }
-        else                      { menuIndex_ = 0; setState(AppState::Settings); }
+        else                       { menuIndex_ = 0; setState(AppState::Settings); }
         break;
 
       case AppState::Settings:
-        if (menuIndex_ == 0) {
-          menuIndex_ = (lang_ == Language::Polish) ? 0 : 1;
-          setState(AppState::Language);
-        } else if (menuIndex_ == 1) {
-          motor_.detect(); setState(AppState::Diagnostics);
-        } else {
-          setState(AppState::MainMenu);
-        }
+        if      (menuIndex_ == 0) { menuIndex_ = (lang_ == Language::Polish) ? 0 : 1; setState(AppState::Language); }
+        else if (menuIndex_ == 1) { motor_.detect(); setState(AppState::Diagnostics); }
+        else                       setState(AppState::MainMenu);
         break;
       case AppState::Language:
         lang_ = (menuIndex_ == 0) ? Language::Polish : Language::English;
@@ -659,26 +761,18 @@ void App::handleInput(uint32_t nowMs) {
       case AppState::PresetEdit:
         onEditClick(); break;
 
-      case AppState::ManualMode: {
-        const bool stopped = (manualSetRpm_ == 0 && !manualStopping_);
-        if (stopped) {
-          // Toggle direction when stopped.
-          manualChangeDirection(manualDir_ == WindDir::CW ? WindDir::CCW : WindDir::CW);
-        } else {
-          // Stop motor.
-          manualSetRpm_ = 0;
-          manualStopping_ = true;
+      case AppState::ManualMode:
+        // Click = controlled stop (target → 0). Do NOT exit.
+        if (!manualExitPending_) {
+          manualTargetSigned_ = 0;
         }
         break;
-      }
 
       case AppState::PresetList: {
         const uint8_t backIdx = static_cast<uint8_t>(presets_.count() + 1);
-        if (menuIndex_ == 0) {
-          enterPresetEditNew();
-        } else if (menuIndex_ == backIdx) {
-          menuIndex_ = 0; setState(AppState::MainMenu);
-        } else {
+        if      (menuIndex_ == 0)       enterPresetEditNew();
+        else if (menuIndex_ == backIdx) { menuIndex_ = 0; setState(AppState::MainMenu); }
+        else {
           presetIndex_ = static_cast<uint8_t>(menuIndex_ - 1);
           actionIndex_ = 0; menuWindow_ = 0;
           setState(AppState::PresetActions);
@@ -689,12 +783,10 @@ void App::handleInput(uint32_t nowMs) {
         if (actionIndex_ == 4) { setState(AppState::PresetList); break; }
         PresetRecord p{};
         if (!presets_.get(presetIndex_, p)) { setState(AppState::PresetList); break; }
-        if (actionIndex_ == 0) {
-          draft_ = p.program; setState(AppState::StartConfirm);
-        } else if (actionIndex_ == 1) {
-          enterPresetEditExisting();
-        } else if (actionIndex_ == 2) {
-          strncpy(nameBuf_, p.name, PRESET_NAME_LEN); nameBuf_[PRESET_NAME_LEN] = 0;
+        if      (actionIndex_ == 0) { draft_ = p.program; setState(AppState::StartConfirm); }
+        else if (actionIndex_ == 1) { enterPresetEditExisting(); }
+        else if (actionIndex_ == 2) {
+          initNameBuf(p.name);
           namePos_ = 0; editingPreset_ = true; editingPresetIndex_ = presetIndex_;
           saveAsNew_ = false; draft_ = p.program; setState(AppState::PresetName);
         } else {
@@ -702,24 +794,22 @@ void App::handleInput(uint32_t nowMs) {
         }
         break;
       }
-      case AppState::PresetName: {
-        if (nameBuf_[namePos_] == 0) nameBuf_[namePos_] = 'A';
-        namePos_++;
-        if (namePos_ >= PRESET_NAME_LEN) namePos_ = PRESET_NAME_LEN - 1;
-        nameBuf_[PRESET_NAME_LEN] = 0;
+      case AppState::PresetName:
+        // Click: confirm character and advance to next position.
+        if (namePos_ < PRESET_NAME_LEN - 1) namePos_++;
+        // nameBuf_[PRESET_NAME_LEN] stays '\0'; do NOT touch it.
         break;
-      }
+
       case AppState::PresetDeleteConfirm:
         if (deleteYes_) presets_.remove(presetIndex_);
         menuIndex_ = 0; setState(AppState::PresetList); break;
 
-      case AppState::StartConfirm: startCountdown(); break;
-
+      case AppState::StartConfirm:
+        startCountdown(); break;
       case AppState::Paused:
         winding_.requestResume(); setState(AppState::Winding); break;
-
-      case AppState::Complete: startCountdown(); break;
-
+      case AppState::Complete:
+        startCountdown(); break;
       default: break;
     }
   }
@@ -732,27 +822,20 @@ void App::handleInput(uint32_t nowMs) {
 void App::loop() {
   const uint32_t now = millis();
 
-  // Input polling (high priority, every 1 ms).
   if (now - lastInputMs_ >= INPUT_POLL_MS) {
     lastInputMs_ = now;
     input_.update(now);
   }
 
-  // Boot sequence.
   if (state_ == AppState::Boot) {
     handleBoot(now);
     return;
   }
 
-  // True manual motor tick.
   if (state_ == AppState::ManualMode) {
     tickManualMode(now);
-    // If stop requested and now halted, complete the exit if user pressed long-press.
-    // (Long-press sets setRpm=0 via exitManualMode; here we just keep ticking
-    //  until stopped, then we handle it in the next long-press or the user stays in manual.)
   }
 
-  // Auto winding engine.
   if (state_ == AppState::Winding || state_ == AppState::Paused) {
     winding_.tick(now);
     if      (winding_.isPaused())   setState(AppState::Paused);
@@ -762,7 +845,6 @@ void App::loop() {
     else if (state_ == AppState::Paused && !winding_.isPaused()) setState(AppState::Winding);
   }
 
-  // Countdown timer.
   if (state_ == AppState::Countdown) {
     if (now - countdownAtMs_ >= 1000) {
       countdownAtMs_ = now;

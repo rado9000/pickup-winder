@@ -6,8 +6,10 @@ enum class StrId : uint8_t {
   AppTitle,
   Initializing,
   SystemReady,
-  Auto,           // renamed from Manual
-  ManualMode,     // new TRUE manual mode
+  Auto,              // menu item — "AUTOMATYCZNY" / "AUTO"
+  AutoTitle,         // screen header — "TRYB AUTOMATYCZNY" / "AUTO MODE"
+  ManualMode,        // menu item — "RECZNY" / "MANUAL"
+  ManualTitle,       // screen header — "TRYB RECZNY" / "MANUAL"
   Presets,
   Settings,
   Language,
@@ -25,6 +27,7 @@ enum class StrId : uint8_t {
   Linear,
   Cw,
   Ccw,
+  Stop,              // used for Manual at zero RPM
   ClickStart,
   ClickAgain,
   HoldBack,
@@ -52,13 +55,14 @@ enum class StrId : uint8_t {
   Firmware,
   HoldStop,
   Cancel,
-  // Manual mode specific
+  PresetName,        // "NAZWA PRESETU" / "PRESET NAME"
+  RotClickNext,      // "OBROT/KLIK DALEJ" / "ROT/CLICK NEXT"
+  HoldSave,          // "HOLD=ZAPISZ" / "HOLD=SAVE"
   ManualSet,
   ManualAct,
   ManualTurns,
-  ManualClickDir,
-  ManualClickStop,
-  ManualHoldBack,
+  ManualClickStop,   // hint while running
+  ManualHoldBack,    // hint while stopped (long-press = exit)
   COUNT
 };
 

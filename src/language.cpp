@@ -3,62 +3,68 @@
 #include <stdio.h>
 #include <string.h>
 
+// Polish — no diacritics (HD44780 ASCII-compatible)
 static const char* const kPl[] = {
-    "   PICKUP WINDER",    // AppTitle
-    "   INITIALIZING",    // Initializing
-    "   SYSTEM READY",    // SystemReady
-    "AUTO",               // Auto
-    "MANUAL",             // ManualMode
-    "PRESETY",            // Presets
-    "USTAWIENIA",         // Settings
-    "JEZYK",              // Language
-    "DIAGNOSTYKA",        // Diagnostics
-    "WSTECZ",             // Back
-    "ZWOJE",              // Turns
-    "PREDKOSC",           // Rpm
-    "RAMP UP",            // RampUp
-    "RAMP DOWN",          // RampDown
-    "CZAS UP",            // UpTime
-    "CZAS DOWN",          // DownTime
-    "KIERUNEK",           // Direction
-    "START",              // Start
-    "S-CURVE",            // SCurve
-    "LINEAR",             // Linear
-    "CW",                 // Cw
-    "CCW",                // Ccw
-    "KLIK = START",       // ClickStart
-    "KLIK: PONOW",        // ClickAgain
-    "HOLD: WSTECZ",       // HoldBack
-    "HOLD = PAUZA",       // HoldPause
-    "KLIK:GO HOLD:STOP",  // ClickGoHoldStop
-    "PAUZA",              // Paused
-    "GOTOWE",             // Complete
-    "STOP",               // Stopped
-    "PRACA",              // Run
-    "+ NOWY PRESET",      // NewPreset
-    "ZAPISZ",             // Save
-    "ZMIEN NAZWE",        // Rename
-    "EDYTUJ",             // Edit
-    "USUN",               // Delete
-    "USUNAC?",            // ConfirmDelete
-    "TAK",                // Yes
-    "NIE",                // No
-    "BLAD SILNIKA",       // MotorError
-    "BRAK ODPOWIEDZI",    // NoRs485
-    "KLIK = PONOW",       // ClickRetry
-    "POLSKI",             // Polski
-    "ENGLISH",            // English
-    "SILNIK: OK",         // MotorOk
-    "RS485: OK",          // Rs485Ok
-    "FW",                 // Firmware
-    "HOLD: STOP",         // HoldStop
-    "ANULUJ",             // Cancel
-    "UST:",               // ManualSet
-    "ACT:",               // ManualAct
-    "ZWOJE:",             // ManualTurns
-    "KLIK:KIER HOLD:WYJ", // ManualClickDir
-    "KLIK:STOP HOLD:WYJ", // ManualClickStop
-    "HOLD: WYJDZ",        // ManualHoldBack
+    "   PICKUP WINDER",     // AppTitle
+    "   INITIALIZING",     // Initializing
+    "   SYSTEM READY",     // SystemReady
+    "AUTOMATYCZNY",        // Auto          (main menu item)
+    "TRYB AUTOMATYCZNY",   // AutoTitle
+    "RECZNY",              // ManualMode    (main menu item)
+    "TRYB RECZNY",         // ManualTitle
+    "PRESETY",             // Presets
+    "USTAWIENIA",          // Settings
+    "JEZYK",               // Language
+    "DIAGNOSTYKA",         // Diagnostics
+    "WSTECZ",              // Back
+    "ZWOJE",               // Turns
+    "PREDKOSC",            // Rpm
+    "RAMP UP",             // RampUp
+    "RAMP DOWN",           // RampDown
+    "CZAS UP",             // UpTime
+    "CZAS DOWN",           // DownTime
+    "KIERUNEK",            // Direction
+    "START",               // Start
+    "S-CURVE",             // SCurve
+    "LINEAR",              // Linear
+    "CW",                  // Cw
+    "CCW",                 // Ccw
+    "STOP",                // Stop
+    "KLIK = START",        // ClickStart
+    "KLIK: PONOW",         // ClickAgain
+    "HOLD: WSTECZ",        // HoldBack
+    "HOLD = PAUZA",        // HoldPause
+    "KLIK:GO HOLD:STOP",   // ClickGoHoldStop
+    "PAUZA",               // Paused
+    "GOTOWE",              // Complete
+    "PRZERWANO",           // Stopped
+    "PRACA",               // Run
+    "+ NOWY PRESET",       // NewPreset
+    "ZAPISZ",              // Save
+    "ZMIEN NAZWE",         // Rename
+    "EDYTUJ",              // Edit
+    "USUN",                // Delete
+    "USUNAC?",             // ConfirmDelete
+    "TAK",                 // Yes
+    "NIE",                 // No
+    "BLAD SILNIKA",        // MotorError
+    "BRAK ODPOWIEDZI",     // NoRs485
+    "KLIK = PONOW",        // ClickRetry
+    "POLSKI",              // Polski
+    "ENGLISH",             // English
+    "SILNIK: OK",          // MotorOk
+    "RS485: OK",           // Rs485Ok
+    "FW",                  // Firmware
+    "HOLD: STOP",          // HoldStop
+    "ANULUJ",              // Cancel
+    "NAZWA PRESETU",       // PresetName
+    "OBROT/KLIK DALEJ",    // RotClickNext
+    "HOLD=ZAPISZ",         // HoldSave
+    "UST:",                // ManualSet
+    "AKT:",                // ManualAct
+    "ZWOJE:",              // ManualTurns
+    "KLIK:STOP HOLD:WYJ",  // ManualClickStop
+    "HOLD: WYJDZ",         // ManualHoldBack
 };
 
 static const char* const kEn[] = {
@@ -66,6 +72,8 @@ static const char* const kEn[] = {
     "   INITIALIZING",
     "   SYSTEM READY",
     "AUTO",
+    "AUTO MODE",
+    "MANUAL",
     "MANUAL",
     "PRESETS",
     "SETTINGS",
@@ -84,6 +92,7 @@ static const char* const kEn[] = {
     "LINEAR",
     "CW",
     "CCW",
+    "STOP",
     "CLICK TO START",
     "CLICK: AGAIN",
     "HOLD: BACK",
@@ -111,16 +120,18 @@ static const char* const kEn[] = {
     "FW",
     "HOLD: STOP",
     "CANCEL",
-    "SET:",            // ManualSet
-    "ACT:",            // ManualAct
-    "TURNS:",          // ManualTurns
-    "CLICK:DIR HOLD:BCK",  // ManualClickDir
-    "CLICK:STOP HOLD:BCK", // ManualClickStop
-    "HOLD: BACK",      // ManualHoldBack
+    "PRESET NAME",
+    "ROT/CLICK NEXT",
+    "HOLD=SAVE",
+    "SET:",
+    "ACT:",
+    "TURNS:",
+    "CLICK:STOP HOLD:BCK",
+    "HOLD: BACK",
 };
 
-static_assert(sizeof(kPl) / sizeof(kPl[0]) == static_cast<int>(StrId::COUNT), "PL count");
-static_assert(sizeof(kEn) / sizeof(kEn[0]) == static_cast<int>(StrId::COUNT), "EN count");
+static_assert(sizeof(kPl)/sizeof(kPl[0]) == static_cast<int>(StrId::COUNT), "PL count mismatch");
+static_assert(sizeof(kEn)/sizeof(kEn[0]) == static_cast<int>(StrId::COUNT), "EN count mismatch");
 
 const char* tr(Language lang, StrId id) {
   const int i = static_cast<int>(id);

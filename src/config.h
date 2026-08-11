@@ -89,30 +89,40 @@
 #define COUNTDOWN_SECONDS         3
 
 // --- KY-040 / 20 PPR mechanical encoder ---
-// Debounce: minimum µs between accepted edges (filters contact bounce).
-#define ENC_DEBOUNCE_US           3000
+// Debounce: minimum µs between accepted CLK edges.
+// 4 ms suppresses contact bounce without missing slow detents.
+#define ENC_DEBOUNCE_US           4000
 
-// Velocity acceleration: time (ms) between consecutive valid detents.
-// Boundaries are inclusive on the fast side.
-#define ENC_ACCEL_RESET_MS        350   // if gap > this, reset to x1 SLOW
-#define ENC_SLOW_THRESHOLD_MS     150   // gap > 150 ms  → x1
-#define ENC_MEDIUM_THRESHOLD_MS    80   // 80–150 ms     → x2
-#define ENC_FAST_THRESHOLD_MS      40   // 40–80 ms      → x4
-                                        // < 40 ms       → x8
+// Velocity acceleration — inter-detent timing thresholds (ms).
+// >ENC_SLOW_THRESHOLD_MS  → SLOW (x1); idle timeout counts as SLOW.
+// 80-150 ms               → MEDIUM
+// 40-80 ms                → FAST
+// <40 ms                  → VERY_FAST
+#define ENC_ACCEL_RESET_MS        500   // idle longer than this → reset streak+speed
+#define ENC_SLOW_THRESHOLD_MS     150
+#define ENC_MEDIUM_THRESHOLD_MS    80
+#define ENC_FAST_THRESHOLD_MS      40
+
+// Number of consecutive same-direction detents in a fast band before
+// acceleration activates. Prevents a single quick bump from accelerating.
+#define ENC_ACCEL_STREAK_REQUIRED   3
 
 // Serial debug for encoder (set 1 to enable, 0 for silent)
 #define ENC_DEBUG                 0
 
-// --- Encoder acceleration multipliers for menus ---
-#define MENU_ACCEL_SLOW           1
-#define MENU_ACCEL_FAST           2     // only for long lists; capped here
+// --- Acceleration policy per context ---
+// Menus: always x1 (short menus). Only preset-list may use mild accel.
+#define MENU_ACCEL_NONE           0   // use 0 = disabled, 1 = enabled
+#define PRESET_LIST_ACCEL_MAX     2   // max step in long preset list
+#define NAME_ACCEL_MAX            2   // max chars per detent in name editor
 
 // --- Digit editor ---
 #define TURNS_DIGITS              5
 #define RPM_DIGITS                4
 #define RAMP_TENTHS_DIGITS        3
 
-// --- Manual mode RPM step per detent (velocity band) ---
+// --- Manual mode ---
+// RPM step per logical detent, by velocity band.
 #define MANUAL_RPM_STEP_SLOW      1
 #define MANUAL_RPM_STEP_MEDIUM    5
 #define MANUAL_RPM_STEP_FAST      10
