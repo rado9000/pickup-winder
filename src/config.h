@@ -36,15 +36,24 @@
 // EMA alpha after a small median window (0..1). Higher = faster, noisier.
 #define GAUSS_FILTER_ALPHA               0.15f
 
-// TEMPORARY — calibrate using reference magnet:
-//   GAUSS_G_PER_ADC_COUNT = knownGauss / abs(magnetRaw - zeroRaw)
-#define GAUSS_G_PER_ADC_COUNT            1.0f
+// Calibrated from reference magnet:
+// previous reading ~225 G, reference ~750 G
+// scale correction = 750 / 225 = 3.333333
+#define GAUSS_G_PER_ADC_COUNT            3.333333f
 
 #define GAUSS_TRIGGER_G                  100.0f
 #define GAUSS_RELEASE_G                   70.0f
 
 #define GAUSS_TRIGGER_HOLD_MS            120
 #define GAUSS_RELEASE_HOLD_MS            500
+
+// Pole label from signed Gauss. Flip only this if N/S is reversed on hardware.
+// 1: positive Gauss → N, negative → S
+// 0: positive Gauss → S, negative → N
+#define GAUSS_POSITIVE_POLE_IS_N         1
+
+// Below this |Gauss|, report no pole (avoid N/S flicker near zero).
+#define GAUSS_POLE_MIN_G                 20.0f
 
 // 1 = allow full-screen Gauss overlay while motor is running
 #define GAUSS_OVERLAY_DURING_MOTOR_RUN   1

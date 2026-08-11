@@ -212,21 +212,27 @@ void App::drawGaussCalibration() {
 }
 
 void App::drawGaussOverlay() {
-  // Professional user screen — no RAW/ZERO/DELTA diagnostics.
+  // Magnitude + separate pole — no signed ± on the user screen.
   ui_.setLine(0, tr(lang_, StrId::MagnetMeasurement));
-  ui_.setLine(1, "");
-  ui_.setLine(2, tr(lang_, StrId::MagnetStrength));
+  ui_.setLine(1, tr(lang_, StrId::MagnetStrength));
 
   const float g = gauss_.gauss();
-  char line[21];
-  if (fabsf(g) < 0.5f) {
-    snprintf(line, sizeof line, "    0 GAUSS");
+  const int mag = static_cast<int>(lroundf(fabsf(g)));
+  char lineG[21];
+  snprintf(lineG, sizeof lineG, "     %d GAUSS", mag);
+  ui_.setLine(2, lineG);
+
+  const MagneticPole pole = gauss_.pole();
+  const char* poleCh = (pole == MagneticPole::North) ? "N"
+                       : (pole == MagneticPole::South) ? "S" : "-";
+  char lineP[21];
+  // Polish: "     BIEGUN: N" / English: "      POLE: N"
+  if (lang_ == Language::Polish) {
+    snprintf(lineP, sizeof lineP, "     %s: %s", tr(lang_, StrId::MagnetPole), poleCh);
   } else {
-    const int gi = static_cast<int>(lroundf(g));
-    snprintf(line, sizeof line, "  %+d GAUSS", gi);
+    snprintf(lineP, sizeof lineP, "      %s: %s", tr(lang_, StrId::MagnetPole), poleCh);
   }
-  // Center-ish within 20 cols.
-  ui_.setLine(3, line);
+  ui_.setLine(3, lineP);
 }
 
 void App::handleBoot(uint32_t nowMs) {

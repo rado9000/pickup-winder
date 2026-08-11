@@ -80,6 +80,18 @@ float GaussMeter::gauss() const {
   return zeroedCounts() * GAUSS_G_PER_ADC_COUNT;
 }
 
+MagneticPole GaussMeter::pole() const {
+  const float g = gauss();
+  if (fabsf(g) < GAUSS_POLE_MIN_G) {
+    return MagneticPole::None;
+  }
+  const bool positiveIsN = (GAUSS_POSITIVE_POLE_IS_N != 0);
+  if (g > 0.0f) {
+    return positiveIsN ? MagneticPole::North : MagneticPole::South;
+  }
+  return positiveIsN ? MagneticPole::South : MagneticPole::North;
+}
+
 void GaussMeter::updateOverlay(uint32_t nowMs, float absG) {
   if (!calibrationValid_) {
     overlayActive_ = false;
@@ -95,11 +107,17 @@ void GaussMeter::updateOverlay(uint32_t nowMs, float absG) {
         overlayActive_ = true;
         triggerTiming_ = false;
         releaseTiming_ = false;
-        Serial.printf("[GAUSS] overlay ON raw=%d zero=%.1f delta=%.1f value=%+.1f G\n",
-                      raw_,
-                      static_cast<double>(zeroRaw_),
-                      static_cast<double>(zeroedCounts()),
-                      static_cast<double>(gauss()));
+        {
+          const MagneticPole p = pole();
+          const char* ps = (p == MagneticPole::North) ? "N"
+                           : (p == MagneticPole::South) ? "S" : "-";
+          Serial.printf("[GAUSS] overlay ON raw=%d zero=%.1f delta=%.1f value=%+.1f G pole=%s\n",
+                        raw_,
+                        static_cast<double>(zeroRaw_),
+                        static_cast<double>(zeroedCounts()),
+                        static_cast<double>(gauss()),
+                        ps);
+        }
       }
     } else {
       triggerTiming_ = false;
@@ -113,8 +131,10 @@ void GaussMeter::updateOverlay(uint32_t nowMs, float absG) {
         overlayActive_ = false;
         releaseTiming_ = false;
         triggerTiming_ = false;
-        Serial.printf("[GAUSS] overlay OFF value=%+.1f G\n",
-                      static_cast<double>(gauss()));
+        Serial.printf("[GAUSS] overlay OFF value=%+.1f G pole=%s\n",
+                      static_cast<double>(gauss()),
+                      (pole() == MagneticPole::North) ? "N"
+                      : (pole() == MagneticPole::South) ? "S" : "-");
       }
     } else {
       releaseTiming_ = false;
@@ -211,6 +231,7 @@ void GaussMeter::update(uint32_t) {}
 void GaussMeter::startZeroCalibration() {}
 float GaussMeter::zeroedCounts() const { return 0.0f; }
 float GaussMeter::gauss() const { return 0.0f; }
+MagneticPole GaussMeter::pole() const { return MagneticPole::None; }
 void GaussMeter::sampleAdc() {}
 void GaussMeter::pushMedian(int) {}
 int GaussMeter::median3() const { return 0; }

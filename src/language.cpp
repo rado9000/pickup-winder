@@ -69,6 +69,7 @@ static const char* const kPl[] = {
     "BEZ LIMITU",          // Unlimited
     "   POMIAR MAGNESU",   // MagnetMeasurement
     "   SILA MAGNESU",     // MagnetStrength
+    "BIEGUN",              // MagnetPole
     " KALIBRACJA GAUSSA",  // GaussCalibration
     "    USUN MAGNES",     // RemoveMagnet
     "     ZERO OK",        // GaussZeroOk
@@ -140,6 +141,7 @@ static const char* const kEn[] = {
     "UNLIMITED",
     "    GAUSS METER",     // MagnetMeasurement
     "  MAGNET STRENGTH",   // MagnetStrength
+    "POLE",                // MagnetPole
     " GAUSS CALIBRATION",  // GaussCalibration
     "   REMOVE MAGNET",    // RemoveMagnet
     "     ZERO OK",        // GaussZeroOk

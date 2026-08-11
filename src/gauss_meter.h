@@ -4,6 +4,8 @@
 #include <stdbool.h>
 #include "config.h"
 
+enum class MagneticPole : uint8_t { None = 0, North, South };
+
 // AH49HZ3-G1 bipolar linear Hall → ESP32-S3 ADC on PIN_GAUSS_ADC.
 // Zero field ≠ ADC 0; zero offset is measured at every boot (or Settings re-zero).
 class GaussMeter {
@@ -22,7 +24,9 @@ class GaussMeter {
   float filteredRaw() const { return filteredRaw_; }
   float zeroRaw() const { return zeroRaw_; }
   float zeroedCounts() const;
+  // Signed Gauss (polarity preserved). Display magnitude separately via fabsf().
   float gauss() const;
+  MagneticPole pole() const;
 
   // True while automatic magnet overlay should be shown (hysteresis applied).
   bool overlayRequested() const { return overlayActive_; }

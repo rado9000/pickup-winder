@@ -67,6 +67,7 @@ enum class StrId : uint8_t {
   Unlimited,         // "BEZ LIMITU" / "UNLIMITED"
   MagnetMeasurement, // "POMIAR MAGNESU" / "GAUSS METER"
   MagnetStrength,    // "SILA MAGNESU" / "MAGNET STRENGTH"
+  MagnetPole,        // "BIEGUN" / "POLE"
   GaussCalibration,  // "KALIBRACJA GAUSSA" / "GAUSS CALIBRATION"
   RemoveMagnet,      // "USUN MAGNES" / "REMOVE MAGNET"
   GaussZeroOk,       // "ZERO OK" / "ZERO OK"
