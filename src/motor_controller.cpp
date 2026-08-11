@@ -66,20 +66,37 @@ bool MotorController::prepareForWinding() {
   }
   if (!servo_->setEnable(true)) {
     Serial.println(F("[MOTOR] enable failed"));
+    return false;
   }
+  enabled_ = true;
   if (SERVO_HEARTBEAT_MS > 0) {
     servo_->setHeartbeatMs(SERVO_HEARTBEAT_MS);
   }
+  Serial.println(F("[MOTOR] ENABLED for winding"));
   return true;
 }
 
 void MotorController::idleSafe() {
+  // Controlled stop only — driver remains enabled (e.g. Pause holding torque).
   if (!servo_) {
     return;
   }
   servo_->setHeartbeatMs(0);
-  servo_->speedStop(SERVO_SOFT_STOP_ACC);
+  softStop();
+}
+
+bool MotorController::releaseMotor() {
+  // Electrically release holding torque. Call ONLY after actual RPM ≈ 0.
+  if (!servo_) {
+    return false;
+  }
+  softStop();
+  servo_->setHeartbeatMs(0);
+  const bool ok = servo_->setEnable(false);
+  enabled_ = false;
   setRpm_ = 0;
+  Serial.println(F("[MOTOR] RELEASED (shaft free)"));
+  return ok;
 }
 
 void MotorController::setDirection(WindDir dir) {

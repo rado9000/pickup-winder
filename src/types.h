@@ -43,6 +43,7 @@ enum class WindPhase : uint8_t {
   FinalApproach,
   Pausing,
   Paused,
+  Stopping,   // target/abort reached: soft-stop, wait RPM≈0, then releaseMotor
   Complete,
   Aborted,
   Fault,

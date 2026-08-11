@@ -17,6 +17,7 @@ bool WindingController::isActive() const {
     case WindPhase::FinalApproach:
     case WindPhase::Pausing:
     case WindPhase::Paused:
+    case WindPhase::Stopping:
       return true;
     default:
       return false;
@@ -28,6 +29,12 @@ void WindingController::commandStopOnly() {
   if (motor_) {
     motor_->softStop();
   }
+}
+
+void WindingController::beginStopping(bool abortOutcome, uint32_t nowMs) {
+  stoppingToAbort_ = abortOutcome;
+  commandStopOnly();
+  enterPhase(WindPhase::Stopping, nowMs);
 }
 
 bool WindingController::latchTargetReached(uint32_t nowMs) {
@@ -46,9 +53,9 @@ bool WindingController::latchTargetReached(uint32_t nowMs) {
                 static_cast<long long>(turns_.currentEncoder()),
                 static_cast<unsigned long long>(turns_.progressCounts()),
                 static_cast<unsigned long long>(turns_.targetCounts()));
-  Serial.println(F("[AUTO] STOP"));
+  Serial.println(F("[AUTO] STOPPING"));
 #endif
-  enterPhase(WindPhase::Complete, nowMs);
+  beginStopping(false, nowMs);
   return true;
 }
 
@@ -101,27 +108,33 @@ void WindingController::enterPhase(WindPhase p, uint32_t nowMs) {
       break;
     case WindPhase::Paused:
       Serial.println(F("[WIND] PAUSED"));
+      // Keep driver ENABLED — holding torque preserves coil position.
       commandRpm_ = 0;
       motor_->softStop();
       activeTiming_ = false;
       break;
+    case WindPhase::Stopping:
+      Serial.println(F("[AUTO] STOPPING (wait RPM then release)"));
+      commandRpm_ = 0;
+      motor_->softStop();
+      rampStartMs_ = nowMs;
+      activeTiming_ = true;
+      lastActiveStampMs_ = nowMs;
+      break;
     case WindPhase::Complete:
       Serial.println(F("[WIND] COMPLETE"));
       commandRpm_ = 0;
-      motor_->idleSafe();
       activeTiming_ = false;
       break;
     case WindPhase::Aborted:
       Serial.println(F("[WIND] ABORTED"));
       commandRpm_ = 0;
-      motor_->idleSafe();
       activeTiming_ = false;
       break;
     case WindPhase::Fault:
       Serial.printf("[WIND] FAULT %s\n", faultText_ ? faultText_ : "?");
       commandRpm_ = 0;
       motor_->emergencyStop();
-      motor_->idleSafe();
       activeTiming_ = false;
       break;
     default:
@@ -162,6 +175,7 @@ bool WindingController::start(const WindingProgram& program) {
   abortRequested_ = false;
   approachIssued_ = false;
   targetReachedLatch_ = false;
+  stoppingToAbort_ = false;
   activeMs_ = 0;
   commandRpm_ = 0;
   faultText_ = nullptr;
@@ -267,6 +281,9 @@ void WindingController::tick(uint32_t nowMs) {
 
   checkFaults(nowMs);
   if (phase_ == WindPhase::Fault) {
+    if (motor_->actualRpmAbs() <= MOTOR_RELEASE_RPM_THRESHOLD && motor_->isEnabled()) {
+      motor_->releaseMotor();
+    }
     return;
   }
 
@@ -281,7 +298,7 @@ void WindingController::tick(uint32_t nowMs) {
 
   if (abortRequested_ && (phase_ == WindPhase::Paused || phase_ == WindPhase::Pausing)) {
     abortRequested_ = false;
-    enterPhase(WindPhase::Aborted, nowMs);
+    beginStopping(true, nowMs);
     return;
   }
 
@@ -355,7 +372,8 @@ void WindingController::tick(uint32_t nowMs) {
         // Already at/past target handled by latch. Still short → same-dir approach.
         if (turns_.remainingCounts() <= FINAL_APPROACH_SKIP_COUNTS ||
             turns_.atTarget(FINAL_POSITION_TOLERANCE_COUNTS)) {
-          enterPhase(WindPhase::Complete, nowMs);
+          targetReachedLatch_ = true;
+          beginStopping(false, nowMs);
         } else {
           enterPhase(WindPhase::FinalApproach, nowMs);
         }
@@ -367,7 +385,8 @@ void WindingController::tick(uint32_t nowMs) {
       if (!approachIssued_) {
         if (turns_.remainingCounts() <=
             static_cast<uint64_t>(FINAL_APPROACH_SKIP_COUNTS)) {
-          enterPhase(WindPhase::Complete, nowMs);
+          targetReachedLatch_ = true;
+          beginStopping(false, nowMs);
           break;
         }
         approachIssued_ = motor_->commandFinalApproach(program_.direction);
@@ -389,9 +408,9 @@ void WindingController::tick(uint32_t nowMs) {
 #if WIND_TARGET_DEBUG
             Serial.printf("[AUTO] TARGET REACHED (early stop) progress=%.3f\n",
                           turns_.turnsExact());
-            Serial.println(F("[AUTO] STOP"));
+            Serial.println(F("[AUTO] STOPPING"));
 #endif
-            enterPhase(WindPhase::Complete, nowMs);
+            beginStopping(false, nowMs);
             break;
           }
           motor_->commandFinalApproach(program_.direction);
@@ -401,20 +420,15 @@ void WindingController::tick(uint32_t nowMs) {
       if (turns_.targetReached() || turns_.remainingCounts() == 0) {
         commandStopOnly();
         targetReachedLatch_ = true;
-        enterPhase(WindPhase::Complete, nowMs);
+        beginStopping(false, nowMs);
         break;
       }
 
       if (nowMs - rampStartMs_ > 30000UL) {
-        if (turns_.atTarget(FINAL_POSITION_TOLERANCE_COUNTS * 4) ||
-            turns_.targetReached()) {
-          enterPhase(WindPhase::Complete, nowMs);
-        } else {
-          // Prefer stop over endless crawl; slight shortfall is acceptable.
-          Serial.println(F("[AUTO] approach timeout — stopping"));
-          commandStopOnly();
-          enterPhase(WindPhase::Complete, nowMs);
-        }
+        commandStopOnly();
+        targetReachedLatch_ = true;
+        Serial.println(F("[AUTO] approach timeout — stopping"));
+        beginStopping(false, nowMs);
       }
       break;
     }
@@ -424,6 +438,37 @@ void WindingController::tick(uint32_t nowMs) {
           (commandRpm_ == 0 && motor_->actualRpmAbs() < 10)) {
         enterPhase(WindPhase::Paused, nowMs);
       }
+      break;
+    }
+    case WindPhase::Stopping: {
+      // Keep commanding stop until actually still, then release driver.
+      if (nowMs - lastSetpointMs_ >= MOTOR_COMMAND_UPDATE_MS) {
+        lastSetpointMs_ = nowMs;
+        motor_->softStop();
+      }
+      if (motor_->actualRpmAbs() <= MOTOR_RELEASE_RPM_THRESHOLD) {
+        motor_->releaseMotor();
+#if WIND_TARGET_DEBUG
+        Serial.println(F("[AUTO] MOTOR RELEASED"));
+#endif
+        if (stoppingToAbort_) {
+          enterPhase(WindPhase::Aborted, nowMs);
+        } else {
+          enterPhase(WindPhase::Complete, nowMs);
+        }
+      } else if (nowMs - rampStartMs_ > 15000UL) {
+        // Safety timeout: release anyway once we've tried long enough.
+        motor_->releaseMotor();
+        if (stoppingToAbort_) {
+          enterPhase(WindPhase::Aborted, nowMs);
+        } else {
+          enterPhase(WindPhase::Complete, nowMs);
+        }
+      }
+      break;
+    }
+    case WindPhase::Fault: {
+      // Handled above after checkFaults.
       break;
     }
     default:

@@ -82,6 +82,7 @@ class App {
     Reversing,       // waiting for actual RPM ≤ threshold, then switch direction
     TargetBraking,   // turn-limit safety: decelerating toward target
     TargetApproach,  // low-speed F6 SAME-DIRECTION only (never F4 / reverse)
+    TargetStopping,  // target reached: soft-stop, wait RPM≈0, releaseMotor
   };
   ManualPhase manualPhase_ = ManualPhase::Idle;
 

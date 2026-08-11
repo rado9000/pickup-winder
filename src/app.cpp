@@ -71,11 +71,24 @@ void App::startCountdown() {
 // ─────────────────────────────────────────────────────────────────────────────
 
 // Init nameBuf_ from src: pad unused positions with spaces, always terminate.
+// IMPORTANT: never read past the source C-string terminator (was causing
+// "PRESET RENAM" by reading adjacent flash/RODATA such as "RENAME").
 void App::initNameBuf(const char* src) {
-  for (int i = 0; i < PRESET_NAME_LEN; i++) {
-    nameBuf_[i] = (src && src[i] != '\0') ? src[i] : ' ';
+  bool endReached = (src == nullptr);
+  for (int i = 0; i < PRESET_NAME_LEN; ++i) {
+    if (!endReached && src[i] != '\0') {
+      nameBuf_[i] = src[i];
+    } else {
+      endReached = true;
+      nameBuf_[i] = ' ';
+    }
   }
   nameBuf_[PRESET_NAME_LEN] = '\0';  // permanent terminator
+#if WIND_TARGET_DEBUG
+  if (src && src[0] == 'P') {
+    Serial.printf("[PRESET] name buffer='%.*s'\n", PRESET_NAME_LEN, nameBuf_);
+  }
+#endif
 }
 
 void App::savePresetName() {
@@ -147,6 +160,9 @@ void App::enterGaussZeroCal(bool returnToSettings) {
 }
 
 void App::finishGaussZeroCal() {
+  if (motor_.isEnabled()) {
+    motor_.releaseMotor();
+  }
   if (gaussCalReturnToSettings_) {
     gaussCalReturnToSettings_ = false;
     menuIndex_ = 0;
@@ -171,6 +187,7 @@ bool App::motorActivityBlocksGaussOverlay() const {
        manualPhase_ == ManualPhase::Reversing ||
        manualPhase_ == ManualPhase::TargetBraking ||
        manualPhase_ == ManualPhase::TargetApproach ||
+       manualPhase_ == ManualPhase::TargetStopping ||
        manualTargetSigned_ != 0 ||
        motor_.actualRpmAbs() > MANUAL_STOPPED_RPM)) {
     return true;
@@ -254,6 +271,8 @@ void App::handleBoot(uint32_t nowMs) {
     Serial.printf("[MOTOR] ENC=%lld RPM=%d AL=%u\n",
                   static_cast<long long>(motor_.encoder()),
                   motor_.actualRpmSigned(), motor_.alarmStatus());
+    // Ensure idle shaft is free after probe — do not leave holding torque on.
+    motor_.releaseMotor();
   }
   if (bootStep_ >= 7) {
     ui_.setLine(0, tr(lang_, StrId::AppTitle));
@@ -484,20 +503,19 @@ bool App::manualShouldStartTargetBrake(uint64_t remainingCounts, uint16_t actual
 }
 
 void App::finishManualTarget() {
+  // Do not Complete while still spinning — enter TargetStopping first.
   manualTargetReached_  = true;
   manualTargetSigned_   = 0;
-  manualPhase_          = ManualPhase::Idle;
   manualApproachIssued_ = false;
+  manualPhase_          = ManualPhase::TargetStopping;
   motor_.softStop();
-  motor_.idleSafe();
 #if WIND_TARGET_DEBUG
   Serial.println(F("[MANUAL] TARGET REACHED"));
   Serial.printf("[MANUAL] travel=%llu tgt=%llu\n",
                 static_cast<unsigned long long>(manualTravelCounts_),
                 static_cast<unsigned long long>(manualTargetCounts_));
-  Serial.println(F("[MANUAL] STOP"));
+  Serial.println(F("[MANUAL] STOPPING"));
 #endif
-  setState(AppState::ManualComplete);
 }
 
 // Returns |manualTargetSigned_| clamped to MAX_WINDER_RPM
@@ -525,40 +543,32 @@ void App::tickManualMode(uint32_t nowMs) {
   const bool     motorStop  = (actualRpm <= MANUAL_STOPPED_RPM);
   const uint64_t remCounts  = manualRemainingCounts();
 
-  // ── Exit pending: stop first, then leave ─────────────────────────
+  // ── Exit pending: stop first, release driver, then leave ─────────
   if (manualExitPending_) {
+    if (nowMs - lastManualCmdMs_ >= MANUAL_COMMAND_UPDATE_MS) {
+      lastManualCmdMs_ = nowMs;
+      motor_.softStop();
+    }
     if (motorStop) {
-      motor_.idleSafe();
+      motor_.releaseMotor();
       manualExitPending_ = false;
       setState(AppState::MainMenu);
       return;
-    }
-    if (nowMs - lastManualCmdMs_ >= MANUAL_COMMAND_UPDATE_MS) {
-      lastManualCmdMs_ = nowMs;
-      servo_.speedStop(SERVO_SOFT_STOP_ACC);
-    }
-    return;
-  }
-
-  // Once latched: only stop — never restart motion for this session.
-  if (manualTargetReached_) {
-    if (nowMs - lastManualCmdMs_ >= MANUAL_COMMAND_UPDATE_MS) {
-      lastManualCmdMs_ = nowMs;
-      servo_.speedStop(SERVO_SOFT_STOP_ACC);
     }
     return;
   }
 
   // ── Turn-limit: reached or passed? ───────────────────────────────
-  if (manualTargetEnabled_ && remCounts == 0) {
+  if (manualTargetEnabled_ && !manualTargetReached_ && remCounts == 0) {
     finishManualTarget();
-    return;
+    // fall through into TargetStopping this tick
   }
 
   // ── Turn-limit: begin controlled stop before overshoot ───────────
-  if (manualTargetEnabled_ &&
+  if (manualTargetEnabled_ && !manualTargetReached_ &&
       manualPhase_ != ManualPhase::TargetBraking &&
       manualPhase_ != ManualPhase::TargetApproach &&
+      manualPhase_ != ManualPhase::TargetStopping &&
       manualShouldStartTargetBrake(remCounts, actualRpm)) {
     // Lock physical direction for the rest of target completion.
     manualTargetFinishDir_ = manualMotorDir_;
@@ -580,7 +590,7 @@ void App::tickManualMode(uint32_t nowMs) {
   switch (manualPhase_) {
 
     case ManualPhase::Idle:
-      if (!tgtStop) {
+      if (!manualTargetReached_ && !tgtStop) {
         manualMotorDir_ = tgtCw ? WindDir::CW : WindDir::CCW;
         motor_.setDirection(manualMotorDir_);
         manualPhase_ = ManualPhase::Running;
@@ -588,6 +598,7 @@ void App::tickManualMode(uint32_t nowMs) {
       break;
 
     case ManualPhase::Running: {
+      if (manualTargetReached_) break;
       const bool runningCw = (manualMotorDir_ == WindDir::CW);
       if (!tgtStop && (tgtCw != runningCw)) {
         manualPhase_ = ManualPhase::Braking;
@@ -605,7 +616,7 @@ void App::tickManualMode(uint32_t nowMs) {
     case ManualPhase::Braking:
       if (nowMs - lastManualCmdMs_ >= MANUAL_COMMAND_UPDATE_MS) {
         lastManualCmdMs_ = nowMs;
-        servo_.speedStop(SERVO_SOFT_STOP_ACC);
+        motor_.softStop();
       }
       if (motorStop) {
         manualPhase_ = ManualPhase::Reversing;
@@ -627,13 +638,13 @@ void App::tickManualMode(uint32_t nowMs) {
       // Controlled deceleration — direction locked, no reverse correction.
       if (nowMs - lastManualCmdMs_ >= MANUAL_COMMAND_UPDATE_MS) {
         lastManualCmdMs_ = nowMs;
-        servo_.speedStop(SERVO_SOFT_STOP_ACC);
+        motor_.softStop();
       }
       if (motorStop) {
         if (remCounts == 0 ||
             remCounts <= static_cast<uint64_t>(FINAL_APPROACH_SKIP_COUNTS)) {
           finishManualTarget();
-          return;
+          break;
         }
         // Still short of target → same-direction low-speed F6 approach.
         manualApproachIssued_ = false;
@@ -648,14 +659,14 @@ void App::tickManualMode(uint32_t nowMs) {
 
     case ManualPhase::TargetApproach: {
       // Low-speed F6 in locked winding direction ONLY. Never F4 / never reverse.
-      if (remCounts == 0) {
+      if (manualTargetReached_ || remCounts == 0) {
         finishManualTarget();
-        return;
+        break;
       }
       // Early forward stop compensation — reduces overshoot, never reverses.
       if (remCounts <= static_cast<uint64_t>(FINAL_FORWARD_STOP_COMPENSATION_COUNTS)) {
         finishManualTarget();
-        return;
+        break;
       }
       if (nowMs - lastManualCmdMs_ >= MANUAL_COMMAND_UPDATE_MS) {
         lastManualCmdMs_ = nowMs;
@@ -665,10 +676,27 @@ void App::tickManualMode(uint32_t nowMs) {
       }
       break;
     }
+
+    case ManualPhase::TargetStopping:
+      // Target latched: only STOP, then release driver, then Complete UI.
+      if (nowMs - lastManualCmdMs_ >= MANUAL_COMMAND_UPDATE_MS) {
+        lastManualCmdMs_ = nowMs;
+        motor_.softStop();
+      }
+      if (motorStop) {
+        motor_.releaseMotor();
+#if WIND_TARGET_DEBUG
+        Serial.println(F("[MANUAL] MOTOR RELEASED"));
+#endif
+        manualPhase_ = ManualPhase::Idle;
+        setState(AppState::ManualComplete);
+        return;
+      }
+      break;
   }
 
   // If somehow stopped with no target, ensure idle (user stop path only).
-  if (manualPhase_ == ManualPhase::Running && tgtStop) {
+  if (!manualTargetReached_ && manualPhase_ == ManualPhase::Running && tgtStop) {
     manualPhase_ = ManualPhase::Braking;
   }
 }
@@ -1049,7 +1077,8 @@ void App::handleInput(uint32_t nowMs) {
       case AppState::ManualMode: {
         if (manualExitPending_) break;
         if (manualPhase_ == ManualPhase::TargetBraking ||
-            manualPhase_ == ManualPhase::TargetApproach) {
+            manualPhase_ == ManualPhase::TargetApproach ||
+            manualPhase_ == ManualPhase::TargetStopping) {
           break;  // turn-limit safety owns the motor
         }
         const int step = manualRpmStep(det);
@@ -1116,8 +1145,10 @@ void App::handleInput(uint32_t nowMs) {
         winding_.requestAbort(); break;
       case AppState::Complete:
       case AppState::Aborted:
+        if (motor_.isEnabled()) motor_.releaseMotor();
         setState(AppState::MainMenu); break;
       case AppState::ManualComplete:
+        if (motor_.isEnabled()) motor_.releaseMotor();
         setState(AppState::MainMenu); break;
       case AppState::ManualMode:
         // Single long-press: stop + exit when safe.

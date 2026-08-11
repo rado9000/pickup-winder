@@ -8,8 +8,10 @@ class MotorController {
   void begin(Servo42* servo);
 
   bool detect();
-  bool prepareForWinding();  // mode + enable + heartbeat
-  void idleSafe();           // heartbeat off, soft stop, keep enable optional
+  bool prepareForWinding();  // mode + enable + heartbeat (before any motion)
+  void idleSafe();           // soft stop + heartbeat off; motor STAYS enabled
+  bool releaseMotor();       // disable driver (shaft free) — call only when stopped
+  bool isEnabled() const { return enabled_; }
 
   void setDirection(WindDir dir);
   WindDir direction() const { return dir_; }
@@ -46,6 +48,7 @@ class MotorController {
   bool encoderOk_ = false;
   bool rpmOk_ = false;
   bool alarmFault_ = false;
+  bool enabled_ = false;
   uint32_t lastPosOkMs_ = 0;
   uint32_t lastCmdMs_ = 0;
 };

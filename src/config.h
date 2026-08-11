@@ -195,8 +195,10 @@
 // Consecutive same-direction non-slow detents before Manual accel engages.
 #define MANUAL_ACCEL_STREAK_REQUIRED    2
 
-// Minimum actual RPM considered "stopped" for direction-change safety.
+// Minimum actual RPM considered "stopped" for direction-change safety
+// and for safe driver release after controlled stop.
 #define MANUAL_STOPPED_RPM        8
+#define MOTOR_RELEASE_RPM_THRESHOLD  MANUAL_STOPPED_RPM
 
 // How often to push new speed command in manual mode (ms).
 #define MANUAL_COMMAND_UPDATE_MS  40
