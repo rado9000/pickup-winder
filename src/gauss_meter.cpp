@@ -148,7 +148,7 @@ void GaussMeter::update(uint32_t nowMs) {
                         calPhase_ == CalPhase::Sampling);
 
   if (!calBusy) {
-    if (nowMs - lastSampleMs_ < GAUSS_SAMPLE_MS) {
+    if (nowMs - lastSampleMs_ < samplePeriodMs_) {
       // Still refresh overlay timing with last value.
       if (calibrationValid_) {
         updateOverlay(nowMs, fabsf(gauss()));

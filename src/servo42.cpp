@@ -79,9 +79,15 @@ bool Servo42::transact(const uint8_t* tx, int txLen, uint8_t* rx, int rxLen, uin
   }
 
   failStreak_++;
-  Serial.printf("[RS485] timeout cmd=0x%02X got=%d/%d\n", txLen >= 3 ? tx[2] : 0, idx, rxLen);
-  if (idx > 0) {
-    dumpRx("partial", rx, idx);
+  // Throttle timeout spam — active winding may fail occasionally without flooding Serial.
+  static uint32_t lastTimeoutLogMs = 0;
+  const uint32_t nowLog = millis();
+  if (nowLog - lastTimeoutLogMs >= 500) {
+    lastTimeoutLogMs = nowLog;
+    Serial.printf("[RS485] timeout cmd=0x%02X got=%d/%d\n", txLen >= 3 ? tx[2] : 0, idx, rxLen);
+    if (idx > 0) {
+      dumpRx("partial", rx, idx);
+    }
   }
   return false;
 }
@@ -215,26 +221,66 @@ bool Servo42::moveRelative(uint16_t rpm, uint8_t acc, int32_t relCounts) {
   return false;
 }
 
-bool Servo42::readEncoder(int64_t& outCounts) {
+bool Servo42::parseEncoderResponse(const uint8_t* rx, int64_t& outCounts) const {
+  // Uplink: FB addr 0x31 carry/value(6 BE) CRC — CRC = sum of preceding bytes.
+  if (rx[0] != 0xFB || rx[1] != SERVO_ADDR || rx[2] != 0x31) {
+    return false;
+  }
+  if (crcSum(rx, 9) != rx[9]) {
+    return false;
+  }
+  int64_t v = 0;
+  for (int i = 0; i < 6; i++) {
+    v = (v << 8) | rx[3 + i];
+  }
+  // Sign-extend 48-bit signed into int64_t.
+  if (v & (int64_t(1) << 47)) {
+    v |= ~((int64_t(1) << 48) - 1);
+  }
+  outCounts = v;
+  return true;
+}
+
+bool Servo42::readEncoderAttempts(int64_t& outCounts, int attempts, uint16_t timeoutMs) {
   uint8_t tx[4] = {0xFA, SERVO_ADDR, 0x31, 0};
   tx[3] = crcSum(tx, 3);
   uint8_t rx[10];
-  for (int attempt = 0; attempt < SERVO_COMM_RETRIES; attempt++) {
-    if (transact(tx, 4, rx, 10, SERVO_RESPONSE_TIMEOUT_MS) && rx[0] == 0xFB &&
-        rx[1] == SERVO_ADDR && rx[2] == 0x31) {
-      int64_t v = 0;
-      for (int i = 0; i < 6; i++) {
-        v = (v << 8) | rx[3 + i];
-      }
-      if (v & (int64_t(1) << 47)) {
-        v |= ~((int64_t(1) << 48) - 1);
-      }
-      outCounts = v;
+  for (int attempt = 0; attempt < attempts; attempt++) {
+#if ENC_TX_TIMING_DEBUG
+    const uint32_t t0 = micros();
+#endif
+    const bool ok = transact(tx, 4, rx, 10, timeoutMs);
+#if ENC_TX_TIMING_DEBUG
+    lastEncoderTxUs_ = micros() - t0;
+    Serial.printf("[ENC] 0x31 transaction = %lu us ok=%d\n",
+                  static_cast<unsigned long>(lastEncoderTxUs_), ok ? 1 : 0);
+#endif
+    if (ok && parseEncoderResponse(rx, outCounts)) {
       return true;
     }
-    delay(20);
+    if (ok) {
+      // Frame arrived but header/CRC invalid — never accept as position.
+      static uint32_t lastCrcLogMs = 0;
+      const uint32_t nowLog = millis();
+      if (nowLog - lastCrcLogMs >= 500) {
+        lastCrcLogMs = nowLog;
+        Serial.println(F("[RS485] 0x31 CRC/header reject"));
+      }
+    }
+    if (attempt + 1 < attempts) {
+      delay(20);
+    }
   }
   return false;
+}
+
+bool Servo42::readEncoder(int64_t& outCounts) {
+  return readEncoderAttempts(outCounts, SERVO_COMM_RETRIES, SERVO_RESPONSE_TIMEOUT_MS);
+}
+
+bool Servo42::readEncoderActive(int64_t& outCounts) {
+  return readEncoderAttempts(outCounts, SERVO_ACTIVE_COMM_RETRIES,
+                             SERVO_ACTIVE_RESPONSE_TIMEOUT_MS);
 }
 
 bool Servo42::readRpm(int16_t& outRpm) {
@@ -243,7 +289,7 @@ bool Servo42::readRpm(int16_t& outRpm) {
   uint8_t rx[6];
   for (int attempt = 0; attempt < SERVO_COMM_RETRIES; attempt++) {
     if (transact(tx, 4, rx, 6, SERVO_RESPONSE_TIMEOUT_MS) && rx[0] == 0xFB &&
-        rx[1] == SERVO_ADDR && rx[2] == 0x32) {
+        rx[1] == SERVO_ADDR && rx[2] == 0x32 && crcSum(rx, 5) == rx[5]) {
       outRpm = static_cast<int16_t>((rx[3] << 8) | rx[4]);
       return true;
     }
@@ -258,9 +304,8 @@ bool Servo42::readAlarm(uint8_t& outStatus) {
   uint8_t rx[5];
   for (int attempt = 0; attempt < SERVO_COMM_RETRIES; attempt++) {
     if (transact(tx, 4, rx, 5, SERVO_RESPONSE_TIMEOUT_MS) && rx[0] == 0xFB &&
-        rx[1] == SERVO_ADDR && rx[2] == 0x37) {
+        rx[1] == SERVO_ADDR && rx[2] == 0x37 && crcSum(rx, 4) == rx[4]) {
       outStatus = rx[3];
-      dumpRx("status", rx, 5);
       return true;
     }
     delay(30);
@@ -274,7 +319,7 @@ bool Servo42::readBusStatus(uint8_t& outStatus) {
   uint8_t rx[5];
   for (int attempt = 0; attempt < SERVO_COMM_RETRIES; attempt++) {
     if (transact(tx, 4, rx, 5, SERVO_RESPONSE_TIMEOUT_MS) && rx[0] == 0xFB &&
-        rx[1] == SERVO_ADDR && rx[2] == 0xF1) {
+        rx[1] == SERVO_ADDR && rx[2] == 0xF1 && crcSum(rx, 4) == rx[4]) {
       outStatus = rx[3];
       return true;
     }

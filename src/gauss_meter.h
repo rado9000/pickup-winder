@@ -12,6 +12,8 @@ class GaussMeter {
  public:
   void begin();
   void update(uint32_t nowMs);
+  // Slow ADC while winding so encoder polling stays deterministic.
+  void setSamplePeriodMs(uint32_t ms) { samplePeriodMs_ = ms; }
 
   // Non-blocking zero calibration (settle + multi-sample average).
   void startZeroCalibration();
@@ -63,4 +65,5 @@ class GaussMeter {
   bool releaseTiming_ = false;
 
   uint32_t lastSampleMs_ = 0;
+  uint32_t samplePeriodMs_ = GAUSS_SAMPLE_MS;
 };

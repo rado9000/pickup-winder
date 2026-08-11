@@ -475,6 +475,12 @@ void App::enterManualMode() {
 
   motor_.prepareForWinding();
 
+  // Fresh 0x31 before Manual counting begins — never reuse menu-cache.
+  motor_.resetEncoderDiag(millis());
+  if (!motor_.refreshPositionNow(true)) {
+    motor_.detect();
+    motor_.refreshPositionNow(true);
+  }
   manualEncStart_ = motor_.encoder();
   manualEncPrev_  = manualEncStart_;
 
@@ -585,17 +591,30 @@ void App::finishManualTarget() {
 }
 
 void App::tickManualMode(uint32_t nowMs) {
-  // ── Telemetry ────────────────────────────────────────────────────
-  if (nowMs - lastManualTelMs_ >= POSITION_POLL_MS) {
-    lastManualTelMs_ = nowMs;
-    motor_.pollTelemetry(nowMs);
+  // ── Position first (MotorController owns poll interval) ──────────
+  motor_.pollTelemetry(nowMs, true, manualRemainingCounts());
 
-    // Accumulate absolute physical travel (CW + CCW both count toward limit).
+  // Accumulate absolute physical travel (CW + CCW both count toward limit).
+  // Only advance when a new valid sample arrived (encoderOk) OR always use
+  // last valid cumulative position — delta of identical values is zero.
+  {
     const int64_t encNow   = motor_.encoder();
     const int64_t delta    = encNow - manualEncPrev_;
     const int64_t absDelta = (delta < 0) ? -delta : delta;
     manualTravelCounts_ += static_cast<uint64_t>(absDelta);
     manualEncPrev_ = encNow;
+  }
+
+  if (motor_.positionLost(nowMs, true) &&
+      (manualPhase_ == ManualPhase::Running ||
+       manualPhase_ == ManualPhase::TargetFinishing ||
+       manualPhase_ == ManualPhase::Braking ||
+       manualPhase_ == ManualPhase::Reversing ||
+       manualPhase_ == ManualPhase::TargetStopping)) {
+    motor_.softStop();
+    errorLine_ = "RS485 POS LOSS";
+    setState(AppState::ErrorState);
+    return;
   }
 
   const uint16_t actualRpm  = motor_.actualRpmAbs();
@@ -723,12 +742,25 @@ void App::tickManualMode(uint32_t nowMs) {
     }
 
     case ManualPhase::TargetStopping:
-      // Target latched: only STOP, then release driver, then Complete UI.
+      // Target latched: only STOP, then final 0x31, release, then Complete UI.
       if (nowMs - lastManualCmdMs_ >= MANUAL_COMMAND_UPDATE_MS) {
         lastManualCmdMs_ = nowMs;
         motor_.softStop();
       }
       if (motorStop) {
+        if (motor_.refreshPositionNow(true)) {
+          const int64_t encNow = motor_.encoder();
+          const int64_t delta = encNow - manualEncPrev_;
+          const int64_t absDelta = (delta < 0) ? -delta : delta;
+          manualTravelCounts_ += static_cast<uint64_t>(absDelta);
+          manualEncPrev_ = encNow;
+        }
+        Serial.printf("[MANUAL] FINAL travel=%.4f maxGapMs=%lu ok=%lu fail=%lu\n",
+                      static_cast<double>(manualTravelCounts_) /
+                          static_cast<double>(SERVO_COUNTS_PER_REV),
+                      static_cast<unsigned long>(motor_.maxEncoderGapMs()),
+                      static_cast<unsigned long>(motor_.encoderPollOk()),
+                      static_cast<unsigned long>(motor_.encoderPollFail()));
         motor_.releaseMotor();
 #if WIND_TARGET_DEBUG
         Serial.println(F("[MANUAL] MOTOR RELEASED"));
@@ -784,7 +816,14 @@ void App::render(uint32_t nowMs) {
   const bool isEdit = (state_ == AppState::AutoEdit ||
                        state_ == AppState::PresetEdit ||
                        state_ == AppState::ManualTurnsSetup);
-  const uint32_t refreshMs = isEdit ? 100u : LCD_UPDATE_MS;
+  const bool windingUi = (state_ == AppState::Winding || state_ == AppState::Paused ||
+                          state_ == AppState::ManualMode);
+  uint32_t refreshMs = LCD_UPDATE_MS;
+  if (isEdit) {
+    refreshMs = 100u;
+  } else if (windingUi) {
+    refreshMs = LCD_UPDATE_ACTIVE_WINDING_MS;
+  }
   if (nowMs - lastLcdMs_ < refreshMs && state_ != AppState::Countdown &&
       state_ != AppState::GaussZeroCal) {
     return;
@@ -840,10 +879,13 @@ void App::render(uint32_t nowMs) {
       break;
     }
     case AppState::Diagnostics:
-      motor_.pollTelemetry(nowMs);
+      motor_.pollTelemetry(nowMs, false);
       ui_.drawDiagnostics(lang_, motor_.alarmOk(),
                           motor_.encoderOk() || servo_.failStreak() == 0,
-                          motor_.actualRpmAbs(), motor_.encoder(), motor_.alarmStatus());
+                          motor_.actualRpmAbs(), motor_.encoder(), motor_.alarmStatus(),
+                          motor_.encoderPollOk(), motor_.encoderPollFail(),
+                          motor_.maxEncoderGapMs(),
+                          motor_.lastPositionAgeMs(nowMs));
       break;
 
     // ── AUTO EDIT ─────────────────────────────────────────────────
@@ -1337,11 +1379,6 @@ void App::loop() {
     input_.update(now);
   }
 
-#if ENABLE_GAUSS_METER
-  // Lower priority than motor control — sample after input, before heavy UI.
-  gauss_.update(now);
-#endif
-
   if (state_ == AppState::Boot) {
     handleBoot(now);
     return;
@@ -1349,6 +1386,8 @@ void App::loop() {
 
   if (state_ == AppState::GaussZeroCal) {
 #if ENABLE_GAUSS_METER
+    gauss_.setSamplePeriodMs(GAUSS_SAMPLE_MS);
+    gauss_.update(now);
     if (gauss_.calibrationComplete()) {
       if (gaussCalDoneMs_ == 0) gaussCalDoneMs_ = now;
       if (now - gaussCalDoneMs_ >= 400) {
@@ -1364,6 +1403,7 @@ void App::loop() {
     return;
   }
 
+  // Active winding / Manual BEFORE Gauss and LCD — encoder timing is highest priority.
   if (state_ == AppState::ManualMode) {
     tickManualMode(now);
   }
@@ -1376,6 +1416,17 @@ void App::loop() {
     else if (winding_.isFault())    { errorLine_ = winding_.status().faultText; setState(AppState::ErrorState); }
     else if (state_ == AppState::Paused && !winding_.isPaused()) setState(AppState::Winding);
   }
+
+#if ENABLE_GAUSS_METER
+  {
+    const bool windingBusy =
+        (state_ == AppState::Winding || state_ == AppState::Paused ||
+         state_ == AppState::ManualMode);
+    gauss_.setSamplePeriodMs(windingBusy ? GAUSS_SAMPLE_ACTIVE_WINDING_MS
+                                         : GAUSS_SAMPLE_MS);
+    gauss_.update(now);
+  }
+#endif
 
   if (state_ == AppState::Countdown) {
     if (now - countdownAtMs_ >= 1000) {

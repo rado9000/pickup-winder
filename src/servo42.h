@@ -27,21 +27,27 @@ class Servo42 {
   // Relative coordinate motion 0xF4 (encoder counts, int32). No zeroing required.
   bool moveRelative(uint16_t rpm, uint8_t acc, int32_t relCounts);
 
-  bool readEncoder(int64_t& outCounts);   // 0x31 int48
+  // Robust 0x31 read (boot/detect/job-start). Retries + full timeout.
+  bool readEncoder(int64_t& outCounts);
+  // Active winding 0x31: single attempt, short timeout — never block the loop long.
+  bool readEncoderActive(int64_t& outCounts);
   bool readRpm(int16_t& outRpm);          // 0x32
   bool readAlarm(uint8_t& outStatus);     // 0x37
   bool readBusStatus(uint8_t& outStatus); // 0xF1
 
   uint32_t lastOkMs() const { return lastOkMs_; }
   uint16_t failStreak() const { return failStreak_; }
+  uint32_t lastEncoderTxUs() const { return lastEncoderTxUs_; }
 
  private:
   uint8_t crcSum(const uint8_t* data, int len) const;
   void setTx(bool enable);
   void clearRx();
   bool transact(const uint8_t* tx, int txLen, uint8_t* rx, int rxLen, uint16_t timeoutMs);
-  bool expectEcho(uint8_t cmd, uint8_t* rx, int rxLen);
+  bool parseEncoderResponse(const uint8_t* rx, int64_t& outCounts) const;
+  bool readEncoderAttempts(int64_t& outCounts, int attempts, uint16_t timeoutMs);
 
   uint32_t lastOkMs_ = 0;
   uint16_t failStreak_ = 0;
+  uint32_t lastEncoderTxUs_ = 0;
 };

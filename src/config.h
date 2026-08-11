@@ -89,8 +89,15 @@
 #define SERVO_HEARTBEAT_MS        2000
 
 #define SERVO_RESPONSE_TIMEOUT_MS 150
+// Active winding: fail fast so one bad frame cannot block the control loop.
+#define SERVO_ACTIVE_RESPONSE_TIMEOUT_MS  40
 #define SERVO_COMM_RETRIES        5
+#define SERVO_ACTIVE_COMM_RETRIES 1
+// Idle / non-winding: allow longer gaps (diagnostics, menus).
 #define SERVO_POS_LOSS_FAULT_MS   800
+// Active winding: do not wind blindly for many revolutions without verified 0x31.
+// At 15 ms polls, 200 ms ≈ 13 missed samples (~8 revs @ 2500 RPM worst case).
+#define SERVO_POS_LOSS_WINDING_MS 200
 
 // --- Winder limits ---
 #define MAX_WINDER_RPM            2500
@@ -123,16 +130,27 @@
 #define MANUAL_FINISH_MIN_RPM                40
 #define MANUAL_FINISH_STOP_COMP_COUNTS       FINAL_FORWARD_STOP_COMPENSATION_COUNTS
 
-// Serial debug for winding target end (set 1 to enable)
-#define WIND_TARGET_DEBUG         1
+// Serial debug for winding target end (set 1 to enable). Off for production.
+#define WIND_TARGET_DEBUG         0
+// Optional [ENC] 0x31 transaction timing (µs). Off for production.
+#define ENC_TX_TIMING_DEBUG       0
 
 // --- Scheduler intervals (ms) ---
 #define INPUT_POLL_MS             1
 #define MOTOR_COMMAND_UPDATE_MS   30
-#define POSITION_POLL_MS          20
+// RS485 0x31 @ 38400: ~4–5 ms wire time + driver latency → safe ≥10 ms.
+// Active: 15 ms; near target: 10 ms; idle menus: 50 ms.
+#define POSITION_POLL_MS          20   // legacy alias / diagnostics default
+#define POSITION_POLL_ACTIVE_MS   15
+#define POSITION_POLL_NEAR_TARGET_MS  10
+#define POSITION_POLL_IDLE_MS     50
+// Enter near-target poll when remaining ≤ this many encoder counts (~2 revs).
+#define POSITION_NEAR_TARGET_COUNTS  (SERVO_COUNTS_PER_REV * 2LL)
 #define RPM_POLL_MS               100
-#define STATUS_POLL_MS            200
+#define STATUS_POLL_MS            250
 #define LCD_UPDATE_MS             150
+#define LCD_UPDATE_ACTIVE_WINDING_MS  250
+#define GAUSS_SAMPLE_ACTIVE_WINDING_MS  25
 #define DEBUG_LOG_MS              500
 
 // --- UI / input ---

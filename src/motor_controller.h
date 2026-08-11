@@ -24,7 +24,14 @@ class MotorController {
   // Same-direction low-speed F6 final approach — NEVER reverses for correction.
   bool commandFinalApproach(WindDir dir);
 
-  void pollTelemetry(uint32_t nowMs);
+  // Telemetry: POSITION first, then RPM, then STATUS.
+  // windingActive selects active/near-target/idle poll intervals + active 0x31 path.
+  void pollTelemetry(uint32_t nowMs, bool windingActive = false,
+                     uint64_t remainingCounts = UINT64_C(0xFFFFFFFFFFFFFFFF));
+
+  // Force a fresh 0x31 sample (robust retries). Used at job start / final sample.
+  bool refreshPositionNow(bool robust = true);
+
   bool encoderOk() const { return encoderOk_; }
   bool rpmOk() const { return rpmOk_; }
   bool alarmOk() const { return !alarmFault_; }
@@ -35,9 +42,22 @@ class MotorController {
   uint8_t alarmStatus() const { return alarmStatus_; }
   uint16_t setRpm() const { return setRpm_; }
 
-  bool positionLost(uint32_t nowMs) const;
+  bool positionLost(uint32_t nowMs, bool windingActive = false) const;
+
+  // Lightweight encoder diagnostics (reset at each winding job start).
+  void resetEncoderDiag(uint32_t nowMs);
+  uint32_t encoderPollOk() const { return encoderPollOk_; }
+  uint32_t encoderPollFail() const { return encoderPollFail_; }
+  uint32_t maxEncoderGapMs() const { return maxEncoderGapMs_; }
+  uint32_t lastPositionAgeMs(uint32_t nowMs) const;
 
  private:
+  void pollPosition(uint32_t nowMs, bool windingActive, uint64_t remainingCounts);
+  void pollRpm(uint32_t nowMs);
+  void pollStatus(uint32_t nowMs);
+  void notePositionOk(uint32_t nowMs, int64_t enc);
+  void notePositionFail();
+
   Servo42* servo_ = nullptr;
   WindDir dir_ = WindDir::CW;
   uint16_t setRpm_ = 0;
@@ -51,4 +71,13 @@ class MotorController {
   bool enabled_ = false;
   uint32_t lastPosOkMs_ = 0;
   uint32_t lastCmdMs_ = 0;
+
+  uint32_t lastPosPollMs_ = 0;
+  uint32_t lastRpmPollMs_ = 0;
+  uint32_t lastStatusPollMs_ = 0;
+
+  uint32_t encoderPollOk_ = 0;
+  uint32_t encoderPollFail_ = 0;
+  uint32_t maxEncoderGapMs_ = 0;
+  uint32_t jobStartMs_ = 0;
 };

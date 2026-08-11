@@ -205,9 +205,12 @@ void Ui::drawError(Language lang, const char* line1, const char* line2) {
 }
 
 void Ui::drawDiagnostics(Language lang, bool motorOk, bool rs485Ok, uint16_t rpm, int64_t enc,
-                         uint8_t alarm) {
+                         uint8_t alarm, uint32_t encOk, uint32_t encFail, uint32_t maxGapMs,
+                         uint32_t ageMs) {
   setLine(0, tr(lang, motorOk ? StrId::MotorOk : StrId::MotorError));
-  setLine(1, tr(lang, rs485Ok ? StrId::Rs485Ok : StrId::NoRs485));
-  setLinef(2, "RPM:%u AL:%u", rpm, alarm);
-  setLinef(3, "ENC:%lld", static_cast<long long>(enc));
+  setLinef(1, "%s gap:%lu", tr(lang, rs485Ok ? StrId::Rs485Ok : StrId::NoRs485),
+           static_cast<unsigned long>(maxGapMs));
+  setLinef(2, "RPM:%u AL:%u age:%lu", rpm, alarm, static_cast<unsigned long>(ageMs));
+  setLinef(3, "E:%lld %lu/%lu", static_cast<long long>(enc),
+           static_cast<unsigned long>(encOk), static_cast<unsigned long>(encFail));
 }

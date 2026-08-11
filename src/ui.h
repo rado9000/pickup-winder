@@ -22,7 +22,8 @@ class Ui {
   void drawAborted(Language lang, const WindingStatus& s);
   void drawError(Language lang, const char* line1, const char* line2);
   void drawDiagnostics(Language lang, bool motorOk, bool rs485Ok, uint16_t rpm, int64_t enc,
-                       uint8_t alarm);
+                       uint8_t alarm, uint32_t encOk = 0, uint32_t encFail = 0,
+                       uint32_t maxGapMs = 0, uint32_t ageMs = 0);
 
  private:
   char lines_[4][21]{};

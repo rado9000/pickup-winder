@@ -159,16 +159,17 @@ bool WindingController::start(const WindingProgram& program) {
     return false;
   }
 
-  int64_t enc = motor_->encoder();
-  if (!motor_->encoderOk()) {
-    if (!motor_->detect()) {
+  // Job reference MUST be a fresh confirmed 0x31 — never a stale cache.
+  motor_->resetEncoderDiag(millis());
+  if (!motor_->refreshPositionNow(true)) {
+    if (!motor_->detect() || !motor_->refreshPositionNow(true)) {
       faultText_ = "NO ENCODER";
       enterPhase(WindPhase::Fault, millis());
       return false;
     }
-    enc = motor_->encoder();
   }
 
+  const int64_t enc = motor_->encoder();
   turns_.beginJob(enc, program_.targetTurns, program_.direction);
   pauseRequested_ = false;
   resumeRequested_ = false;
@@ -225,7 +226,7 @@ void WindingController::checkFaults(uint32_t nowMs) {
     enterPhase(WindPhase::Fault, nowMs);
     return;
   }
-  if (motor_->positionLost(nowMs)) {
+  if (motor_->positionLost(nowMs, true)) {
     faultText_ = "RS485 POS LOSS";
     enterPhase(WindPhase::Fault, nowMs);
   }
@@ -270,7 +271,11 @@ void WindingController::tick(uint32_t nowMs) {
 
   if (isActive() || phase_ == WindPhase::Complete || phase_ == WindPhase::Aborted ||
       phase_ == WindPhase::Fault) {
-    motor_->pollTelemetry(nowMs);
+    const bool windingBusy =
+        (phase_ == WindPhase::RampUp || phase_ == WindPhase::Cruise ||
+         phase_ == WindPhase::RampDown || phase_ == WindPhase::FinalApproach ||
+         phase_ == WindPhase::Pausing || phase_ == WindPhase::Stopping);
+    motor_->pollTelemetry(nowMs, windingBusy, turns_.remainingCounts());
     turns_.update(motor_->encoder());
   }
 
@@ -441,12 +446,22 @@ void WindingController::tick(uint32_t nowMs) {
       break;
     }
     case WindPhase::Stopping: {
-      // Keep commanding stop until actually still, then release driver.
+      // Keep commanding stop until actually still, then final 0x31, then release.
       if (nowMs - lastSetpointMs_ >= MOTOR_COMMAND_UPDATE_MS) {
         lastSetpointMs_ = nowMs;
         motor_->softStop();
       }
       if (motor_->actualRpmAbs() <= MOTOR_RELEASE_RPM_THRESHOLD) {
+        // Fresh encoder sample before Complete — authoritative final count.
+        if (motor_->refreshPositionNow(true)) {
+          turns_.update(motor_->encoder());
+        }
+        Serial.printf("[WIND] FINAL enc=%lld progress=%.4f maxGapMs=%lu ok=%lu fail=%lu\n",
+                      static_cast<long long>(turns_.currentEncoder()),
+                      turns_.turnsExact(),
+                      static_cast<unsigned long>(motor_->maxEncoderGapMs()),
+                      static_cast<unsigned long>(motor_->encoderPollOk()),
+                      static_cast<unsigned long>(motor_->encoderPollFail()));
         motor_->releaseMotor();
 #if WIND_TARGET_DEBUG
         Serial.println(F("[AUTO] MOTOR RELEASED"));
@@ -457,7 +472,10 @@ void WindingController::tick(uint32_t nowMs) {
           enterPhase(WindPhase::Complete, nowMs);
         }
       } else if (nowMs - rampStartMs_ > 15000UL) {
-        // Safety timeout: release anyway once we've tried long enough.
+        // Safety timeout: still try one final sample, then release.
+        if (motor_->refreshPositionNow(true)) {
+          turns_.update(motor_->encoder());
+        }
         motor_->releaseMotor();
         if (stoppingToAbort_) {
           enterPhase(WindPhase::Aborted, nowMs);

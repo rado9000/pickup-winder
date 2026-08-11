@@ -7,6 +7,46 @@ void MotorController::begin(Servo42* servo) {
   servo_ = servo;
 }
 
+void MotorController::resetEncoderDiag(uint32_t nowMs) {
+  encoderPollOk_ = 0;
+  encoderPollFail_ = 0;
+  maxEncoderGapMs_ = 0;
+  jobStartMs_ = nowMs;
+  // Preserve lastPosOkMs_ until a fresh sample succeeds.
+}
+
+uint32_t MotorController::lastPositionAgeMs(uint32_t nowMs) const {
+  if (lastPosOkMs_ == 0) {
+    return UINT32_MAX;
+  }
+  return nowMs - lastPosOkMs_;
+}
+
+void MotorController::notePositionOk(uint32_t nowMs, int64_t enc) {
+  if (lastPosOkMs_ != 0 && jobStartMs_ != 0 && lastPosOkMs_ >= jobStartMs_) {
+    const uint32_t gap = nowMs - lastPosOkMs_;
+    if (gap > maxEncoderGapMs_) {
+      maxEncoderGapMs_ = gap;
+    }
+  } else if (jobStartMs_ != 0 && lastPosOkMs_ != 0 && lastPosOkMs_ < jobStartMs_) {
+    // First sample after job start: gap from job start.
+    const uint32_t gap = nowMs - jobStartMs_;
+    if (gap > maxEncoderGapMs_) {
+      maxEncoderGapMs_ = gap;
+    }
+  }
+  encoder_ = enc;
+  encoderOk_ = true;
+  lastPosOkMs_ = nowMs;
+  encoderPollOk_++;
+}
+
+void MotorController::notePositionFail() {
+  // Keep last valid encoder_ — never invent / zero / interpolate.
+  encoderOk_ = false;
+  encoderPollFail_++;
+}
+
 bool MotorController::detect() {
   if (!servo_) {
     return false;
@@ -33,9 +73,7 @@ bool MotorController::detect() {
   for (int i = 0; i < 8; i++) {
     int64_t enc = 0;
     if (servo_->readEncoder(enc)) {
-      encoder_ = enc;
-      encoderOk_ = true;
-      lastPosOkMs_ = millis();
+      notePositionOk(millis(), enc);
       gotEnc = true;
       Serial.printf("[MOTOR] enc OK=%lld try=%d\n", static_cast<long long>(enc), i);
       break;
@@ -146,53 +184,91 @@ bool MotorController::commandFinalApproach(WindDir dir) {
   return servo_->speedRun(cw, FINAL_APPROACH_RPM, SERVO_INTERNAL_ACC);
 }
 
-void MotorController::pollTelemetry(uint32_t nowMs) {
+bool MotorController::refreshPositionNow(bool robust) {
   if (!servo_) {
+    return false;
+  }
+  int64_t enc = 0;
+  const bool ok = robust ? servo_->readEncoder(enc) : servo_->readEncoderActive(enc);
+  if (ok) {
+    notePositionOk(millis(), enc);
+    return true;
+  }
+  notePositionFail();
+  return false;
+}
+
+void MotorController::pollPosition(uint32_t nowMs, bool windingActive,
+                                   uint64_t remainingCounts) {
+  uint32_t interval = POSITION_POLL_IDLE_MS;
+  if (windingActive) {
+    interval = POSITION_POLL_ACTIVE_MS;
+    if (remainingCounts <= static_cast<uint64_t>(POSITION_NEAR_TARGET_COUNTS)) {
+      interval = POSITION_POLL_NEAR_TARGET_MS;
+    }
+  } else if (enabled_) {
+    interval = POSITION_POLL_MS;
+  }
+
+  if (nowMs - lastPosPollMs_ < interval) {
     return;
   }
+  lastPosPollMs_ = nowMs;
 
-  static uint32_t lastPos = 0;
-  static uint32_t lastRpm = 0;
-  static uint32_t lastSt = 0;
-
-  if (nowMs - lastPos >= POSITION_POLL_MS) {
-    lastPos = nowMs;
-    int64_t enc = 0;
-    if (servo_->readEncoder(enc)) {
-      encoder_ = enc;
-      encoderOk_ = true;
-      lastPosOkMs_ = nowMs;
-    } else {
-      encoderOk_ = false;
-    }
-  }
-
-  if (nowMs - lastRpm >= RPM_POLL_MS) {
-    lastRpm = nowMs;
-    int16_t rpm = 0;
-    if (servo_->readRpm(rpm)) {
-      actualRpmSigned_ = rpm;
-      actualRpmAbs_ = static_cast<uint16_t>(abs(rpm));
-      rpmOk_ = true;
-    } else {
-      rpmOk_ = false;
-    }
-  }
-
-  if (nowMs - lastSt >= STATUS_POLL_MS) {
-    lastSt = nowMs;
-    uint8_t st = 0;
-    if (servo_->readAlarm(st)) {
-      alarmStatus_ = st;
-      // 0=running, 1=stopped are OK; 2..7 are faults
-      alarmFault_ = (st >= 2);
-    }
+  int64_t enc = 0;
+  const bool ok = windingActive ? servo_->readEncoderActive(enc)
+                                : servo_->readEncoder(enc);
+  if (ok) {
+    notePositionOk(nowMs, enc);
+  } else {
+    notePositionFail();
   }
 }
 
-bool MotorController::positionLost(uint32_t nowMs) const {
+void MotorController::pollRpm(uint32_t nowMs) {
+  if (nowMs - lastRpmPollMs_ < RPM_POLL_MS) {
+    return;
+  }
+  lastRpmPollMs_ = nowMs;
+  int16_t rpm = 0;
+  if (servo_->readRpm(rpm)) {
+    actualRpmSigned_ = rpm;
+    actualRpmAbs_ = static_cast<uint16_t>(abs(rpm));
+    rpmOk_ = true;
+  } else {
+    rpmOk_ = false;
+  }
+}
+
+void MotorController::pollStatus(uint32_t nowMs) {
+  if (nowMs - lastStatusPollMs_ < STATUS_POLL_MS) {
+    return;
+  }
+  lastStatusPollMs_ = nowMs;
+  uint8_t st = 0;
+  if (servo_->readAlarm(st)) {
+    alarmStatus_ = st;
+    // 0=running, 1=stopped are OK; 2..7 are faults
+    alarmFault_ = (st >= 2);
+  }
+}
+
+void MotorController::pollTelemetry(uint32_t nowMs, bool windingActive,
+                                    uint64_t remainingCounts) {
+  if (!servo_) {
+    return;
+  }
+  // Priority: POSITION → RPM → STATUS (never starve encoder for secondary telemetry).
+  pollPosition(nowMs, windingActive, remainingCounts);
+  pollRpm(nowMs);
+  pollStatus(nowMs);
+}
+
+bool MotorController::positionLost(uint32_t nowMs, bool windingActive) const {
   if (lastPosOkMs_ == 0) {
     return true;
   }
-  return (nowMs - lastPosOkMs_) > SERVO_POS_LOSS_FAULT_MS;
+  const uint32_t limit =
+      windingActive ? SERVO_POS_LOSS_WINDING_MS : SERVO_POS_LOSS_FAULT_MS;
+  return (nowMs - lastPosOkMs_) > limit;
 }
