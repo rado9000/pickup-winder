@@ -9,29 +9,69 @@ void Input::begin() {
   lastClk_ = digitalRead(PIN_ENC_CLK);
   swPrev_ = digitalRead(PIN_ENC_SW);
   lastEdgeUs_ = micros();
+  lastDetentMs_ = millis();
+}
+
+EncSpeed Input::classify(uint32_t dtMs, int8_t newDir) const {
+  // Direction reversal → reset to SLOW (first step after reversal is precise).
+  if (newDir != 0 && lastDir_ != 0 && newDir != lastDir_) {
+    return EncSpeed::Slow;
+  }
+  if (dtMs >= static_cast<uint32_t>(ENC_SLOW_THRESHOLD_MS)) {
+    return EncSpeed::Slow;
+  }
+  if (dtMs >= static_cast<uint32_t>(ENC_FAST_THRESHOLD_MS)) {
+    if (dtMs >= static_cast<uint32_t>(ENC_MEDIUM_THRESHOLD_MS)) {
+      return EncSpeed::Medium;
+    }
+    return EncSpeed::Fast;
+  }
+  return EncSpeed::VeryFast;
 }
 
 void Input::update(uint32_t nowMs) {
-  (void)nowMs;
-
+  // --- Encoder ---
   const int8_t clk = digitalRead(PIN_ENC_CLK);
   if (clk != lastClk_) {
     const uint32_t nowUs = micros();
-    // Debounce contact bounce on 20 PPR mechanical encoder.
-    if (nowUs - lastEdgeUs_ >= ENC_DEBOUNCE_US) {
-      // One detent ≈ one falling edge on CLK for typical KY-040 modules.
+    const uint32_t elapsedUs = nowUs - lastEdgeUs_;
+
+    if (elapsedUs >= static_cast<uint32_t>(ENC_DEBOUNCE_US)) {
+      // Only count falling CLK edge (KY-040 standard).
       if (lastClk_ == HIGH && clk == LOW) {
-        if (digitalRead(PIN_ENC_DT) == HIGH) {
-          pendingDelta_++;
-        } else {
-          pendingDelta_--;
-        }
+        const int8_t dir = (digitalRead(PIN_ENC_DT) == HIGH) ? +1 : -1;
+        const uint32_t dtMs =
+            (nowMs > lastDetentMs_) ? (nowMs - lastDetentMs_) : 0;
+        // If idle for too long, treat as fresh start (SLOW).
+        const uint32_t effectiveDt =
+            (dtMs > static_cast<uint32_t>(ENC_ACCEL_RESET_MS)) ? ENC_SLOW_THRESHOLD_MS + 1 : dtMs;
+        const EncSpeed spd = classify(effectiveDt, dir);
+
+#if ENC_DEBUG
+        const char* spdStr = (spd == EncSpeed::Slow)     ? "SLOW"
+                             : (spd == EncSpeed::Medium)  ? "MED "
+                             : (spd == EncSpeed::Fast)    ? "FAST"
+                                                          : "XFST";
+        Serial.printf("[ENC] dir=%+d dt=%4lums spd=%s\n",
+                      static_cast<int>(dir), static_cast<unsigned long>(dtMs), spdStr);
+#endif
+
+        lastDir_ = dir;
+        lastDetentMs_ = nowMs;
+        lastSpeed_ = spd;
         lastEdgeUs_ = nowUs;
+
+        // Queue at most one detent per poll; extras are discarded (shouldn't happen at 1 ms poll).
+        if (!detentPending_) {
+          detentPending_ = true;
+          pendingDetent_ = {dir, spd, dtMs};
+        }
       }
     }
     lastClk_ = clk;
   }
 
+  // --- Switch ---
   const bool sw = digitalRead(PIN_ENC_SW);
   if (!sw && swPrev_) {
     swDownMs_ = millis();
@@ -39,41 +79,26 @@ void Input::update(uint32_t nowMs) {
   }
   if (!sw && !longFired_ && (millis() - swDownMs_ >= BUTTON_LONG_PRESS_MS)) {
     longFired_ = true;
-    longPending_ = true;
+    pendingButton_ = ButtonEvent::LongPress;
   }
   if (sw && !swPrev_) {
-    if (!longFired_) {
-      clickPending_ = true;
+    if (!longFired_ && pendingButton_ == ButtonEvent::None) {
+      pendingButton_ = ButtonEvent::Click;
     }
   }
   swPrev_ = sw;
 }
 
-int Input::takeDelta() {
-  // Coalesce burst bounce into at most one detent step per poll.
-  int d = 0;
-  if (pendingDelta_ > 0) {
-    d = 1;
-    pendingDelta_--;
-  } else if (pendingDelta_ < 0) {
-    d = -1;
-    pendingDelta_++;
+EncDetent Input::takeDetent() {
+  if (detentPending_) {
+    detentPending_ = false;
+    return pendingDetent_;
   }
-  // Drop residual noise from the same burst.
-  if ((d > 0 && pendingDelta_ > 0) || (d < 0 && pendingDelta_ < 0)) {
-    pendingDelta_ = 0;
-  }
-  return d;
+  return {0, EncSpeed::Slow, 0};
 }
 
-InputEvent Input::takeEvent() {
-  if (longPending_) {
-    longPending_ = false;
-    return InputEvent::LongPress;
-  }
-  if (clickPending_) {
-    clickPending_ = false;
-    return InputEvent::Click;
-  }
-  return InputEvent::None;
+ButtonEvent Input::takeButton() {
+  const ButtonEvent ev = pendingButton_;
+  pendingButton_ = ButtonEvent::None;
+  return ev;
 }

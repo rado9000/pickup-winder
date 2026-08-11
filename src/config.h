@@ -18,7 +18,7 @@
 #define PIN_ENC_DT                11
 #define PIN_ENC_SW                12
 
-// Future Gauss ADC (DISABLED). GPIO13 is intentionally free.
+// Future Gauss ADC (DISABLED). GPIO13 intentionally free.
 #define PIN_GAUSS_ADC             1
 #define PIN_UNUSED_13             13
 
@@ -38,12 +38,11 @@
 // Bus closed-loop FOC (cmd 0x82, mode 0x05)
 #define SERVO_MODE_BUS_CLOSED_FOC 0x05
 
-// Internal driver ACC (cmd F6 / F4). Manual: Δt per 1 RPM = (256-acc)*50 µs.
-// High ACC ≈ driver tracks ESP32 software ramp closely without distorting it.
-// ACC=250 → 300 µs / RPM step. Tune on hardware if tracking lags.
+// Internal driver ACC. High value → driver tracks ESP32 ramp closely.
+// Manual: Δt per 1 RPM step = (256-acc)*50 µs. ACC=250 → 300 µs/step.
 #define SERVO_INTERNAL_ACC        250
 
-// Soft / quick stop ACC for F6 stop (acc≠0 decelerates; acc=0 = immediate)
+// Soft / quick stop ACC
 #define SERVO_SOFT_STOP_ACC       200
 #define SERVO_QUICK_STOP_ACC      240
 
@@ -69,21 +68,14 @@
 #define RAMP_TIME_STEP_MS         100
 
 // --- Final approach / stop tuning (encoder counts) ---
-// Start FINAL_APPROACH this many counts early (beyond predicted stop distance).
 #define STOP_COMPENSATION_COUNTS  512
-
-// Relative-coordinate (F4) approach speed.
 #define FINAL_APPROACH_RPM        40
-
-// Accept target when |remaining| <= this many counts (~0.03 rev).
 #define FINAL_POSITION_TOLERANCE_COUNTS  64
-
-// If remaining after ramp-down is tiny, skip approach and declare complete.
 #define FINAL_APPROACH_SKIP_COUNTS  32
 
 // --- Scheduler intervals (ms) ---
 #define INPUT_POLL_MS             1
-#define MOTOR_COMMAND_UPDATE_MS  30
+#define MOTOR_COMMAND_UPDATE_MS   30
 #define POSITION_POLL_MS          20
 #define RPM_POLL_MS               100
 #define STATUS_POLL_MS            200
@@ -96,10 +88,38 @@
 #define PRESET_NAME_LEN           12
 #define COUNTDOWN_SECONDS         3
 
-// KY-040 / 20 PPR mechanical encoder
-#define ENC_DEBOUNCE_US           2500
+// --- KY-040 / 20 PPR mechanical encoder ---
+// Debounce: minimum µs between accepted edges (filters contact bounce).
+#define ENC_DEBOUNCE_US           3000
 
+// Velocity acceleration: time (ms) between consecutive valid detents.
+// Boundaries are inclusive on the fast side.
+#define ENC_ACCEL_RESET_MS        350   // if gap > this, reset to x1 SLOW
+#define ENC_SLOW_THRESHOLD_MS     150   // gap > 150 ms  → x1
+#define ENC_MEDIUM_THRESHOLD_MS    80   // 80–150 ms     → x2
+#define ENC_FAST_THRESHOLD_MS      40   // 40–80 ms      → x4
+                                        // < 40 ms       → x8
+
+// Serial debug for encoder (set 1 to enable, 0 for silent)
+#define ENC_DEBUG                 0
+
+// --- Encoder acceleration multipliers for menus ---
+#define MENU_ACCEL_SLOW           1
+#define MENU_ACCEL_FAST           2     // only for long lists; capped here
+
+// --- Digit editor ---
 #define TURNS_DIGITS              5
 #define RPM_DIGITS                4
-#define RAMP_TENTHS_DIGITS        3   // 0.1..20.0 s as 001..200 tenths
+#define RAMP_TENTHS_DIGITS        3
 
+// --- Manual mode RPM step per detent (velocity band) ---
+#define MANUAL_RPM_STEP_SLOW      1
+#define MANUAL_RPM_STEP_MEDIUM    5
+#define MANUAL_RPM_STEP_FAST      10
+#define MANUAL_RPM_STEP_VERY_FAST 25
+
+// Minimum actual RPM considered "stopped" for direction-change safety.
+#define MANUAL_STOPPED_RPM        8
+
+// How often to push new speed command in manual mode (ms).
+#define MANUAL_COMMAND_UPDATE_MS  40

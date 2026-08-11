@@ -6,7 +6,8 @@ enum class StrId : uint8_t {
   AppTitle,
   Initializing,
   SystemReady,
-  Manual,
+  Auto,           // renamed from Manual
+  ManualMode,     // new TRUE manual mode
   Presets,
   Settings,
   Language,
@@ -51,6 +52,13 @@ enum class StrId : uint8_t {
   Firmware,
   HoldStop,
   Cancel,
+  // Manual mode specific
+  ManualSet,
+  ManualAct,
+  ManualTurns,
+  ManualClickDir,
+  ManualClickStop,
+  ManualHoldBack,
   COUNT
 };
 

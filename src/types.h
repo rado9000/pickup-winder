@@ -16,7 +16,8 @@ enum class AppState : uint8_t {
   Settings,
   Language,
   Diagnostics,
-  ManualEdit,
+  AutoEdit,           // formerly ManualEdit — target-based winding setup
+  ManualMode,         // new: true real-time manual speed control
   PresetList,
   PresetActions,
   PresetEdit,
