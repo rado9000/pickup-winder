@@ -119,12 +119,14 @@ bool MotorController::emergencyStop() {
   return servo_ && servo_->emergencyStop();
 }
 
-bool MotorController::startFinalApproach(int32_t remainingSignedCounts) {
+bool MotorController::commandFinalApproach(WindDir dir) {
   if (!servo_) {
     return false;
   }
+  dir_ = dir;
   setRpm_ = FINAL_APPROACH_RPM;
-  return servo_->moveRelative(FINAL_APPROACH_RPM, SERVO_INTERNAL_ACC, remainingSignedCounts);
+  const bool cw = (dir == WindDir::CW);
+  return servo_->speedRun(cw, FINAL_APPROACH_RPM, SERVO_INTERNAL_ACC);
 }
 
 void MotorController::pollTelemetry(uint32_t nowMs) {

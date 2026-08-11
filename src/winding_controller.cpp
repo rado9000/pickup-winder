@@ -23,6 +23,35 @@ bool WindingController::isActive() const {
   }
 }
 
+void WindingController::commandStopOnly() {
+  commandRpm_ = 0;
+  if (motor_) {
+    motor_->softStop();
+  }
+}
+
+bool WindingController::latchTargetReached(uint32_t nowMs) {
+  if (targetReachedLatch_) {
+    return true;
+  }
+  if (!turns_.targetReached()) {
+    return false;
+  }
+  targetReachedLatch_ = true;
+  commandStopOnly();
+#if WIND_TARGET_DEBUG
+  Serial.printf("[AUTO] TARGET REACHED progress=%.3f start=%lld cur=%lld abs=%llu tgt=%llu\n",
+                turns_.turnsExact(),
+                static_cast<long long>(turns_.startEncoder()),
+                static_cast<long long>(turns_.currentEncoder()),
+                static_cast<unsigned long long>(turns_.progressCounts()),
+                static_cast<unsigned long long>(turns_.targetCounts()));
+  Serial.println(F("[AUTO] STOP"));
+#endif
+  enterPhase(WindPhase::Complete, nowMs);
+  return true;
+}
+
 void WindingController::enterPhase(WindPhase p, uint32_t nowMs) {
   phase_ = p;
   switch (p) {
@@ -38,7 +67,9 @@ void WindingController::enterPhase(WindPhase p, uint32_t nowMs) {
     case WindPhase::Cruise:
       Serial.println(F("[WIND] CRUISE"));
       commandRpm_ = clampRpm(program_.targetRpm);
-      motor_->commandRpm(commandRpm_);
+      if (!targetReachedLatch_) {
+        motor_->commandRpm(commandRpm_);
+      }
       activeTiming_ = true;
       lastActiveStampMs_ = nowMs;
       break;
@@ -55,7 +86,7 @@ void WindingController::enterPhase(WindPhase p, uint32_t nowMs) {
       lastActiveStampMs_ = nowMs;
       break;
     case WindPhase::FinalApproach:
-      Serial.println(F("[WIND] FINAL_APPROACH"));
+      Serial.println(F("[AUTO] final forward approach"));
       approachIssued_ = false;
       rampStartMs_ = nowMs;
       activeTiming_ = true;
@@ -130,19 +161,24 @@ bool WindingController::start(const WindingProgram& program) {
   resumeRequested_ = false;
   abortRequested_ = false;
   approachIssued_ = false;
+  targetReachedLatch_ = false;
   activeMs_ = 0;
   commandRpm_ = 0;
   faultText_ = nullptr;
 
-  Serial.printf("[WIND] START target=%lu rpm=%u dir=%s\n",
+  Serial.printf("[WIND] START target=%lu rpm=%u dir=%s enc=%lld\n",
                 static_cast<unsigned long>(program_.targetTurns), program_.targetRpm,
-                program_.direction == WindDir::CW ? "CW" : "CCW");
+                program_.direction == WindDir::CW ? "CW" : "CCW",
+                static_cast<long long>(enc));
 
   enterPhase(WindPhase::RampUp, millis());
   return true;
 }
 
 void WindingController::requestPause() {
+  if (targetReachedLatch_) {
+    return;
+  }
   if (phase_ == WindPhase::RampUp || phase_ == WindPhase::Cruise ||
       phase_ == WindPhase::RampDown || phase_ == WindPhase::FinalApproach) {
     pauseRequested_ = true;
@@ -150,6 +186,9 @@ void WindingController::requestPause() {
 }
 
 void WindingController::requestResume() {
+  if (targetReachedLatch_) {
+    return;
+  }
   if (phase_ == WindPhase::Paused) {
     resumeRequested_ = true;
   }
@@ -159,18 +198,6 @@ void WindingController::requestAbort() {
   if (phase_ == WindPhase::Paused || phase_ == WindPhase::Pausing) {
     abortRequested_ = true;
   }
-}
-
-int32_t WindingController::remainingSigned() const {
-  const int64_t rem = turns_.remainingCounts();
-  if (rem > 2147483647LL) {
-    return (program_.direction == WindDir::CW) ? 2147483647 : -2147483647;
-  }
-  // F4 relative: positive = CW direction in encoder space (manual CW +=)
-  if (program_.direction == WindDir::CW) {
-    return static_cast<int32_t>(rem);
-  }
-  return static_cast<int32_t>(-rem);
 }
 
 void WindingController::checkFaults(uint32_t nowMs) {
@@ -191,6 +218,10 @@ void WindingController::checkFaults(uint32_t nowMs) {
 }
 
 void WindingController::updateSetpoint(uint32_t nowMs) {
+  if (targetReachedLatch_) {
+    commandStopOnly();
+    return;
+  }
   if (nowMs - lastSetpointMs_ < MOTOR_COMMAND_UPDATE_MS) {
     return;
   }
@@ -239,6 +270,15 @@ void WindingController::tick(uint32_t nowMs) {
     return;
   }
 
+  // Hard target guard — every active phase. Past target → STOP, never reverse.
+  if (phase_ == WindPhase::RampUp || phase_ == WindPhase::Cruise ||
+      phase_ == WindPhase::RampDown || phase_ == WindPhase::FinalApproach ||
+      phase_ == WindPhase::Pausing) {
+    if (latchTargetReached(nowMs)) {
+      return;
+    }
+  }
+
   if (abortRequested_ && (phase_ == WindPhase::Paused || phase_ == WindPhase::Pausing)) {
     abortRequested_ = false;
     enterPhase(WindPhase::Aborted, nowMs);
@@ -263,7 +303,6 @@ void WindingController::tick(uint32_t nowMs) {
       if (nowMs - rampStartMs_ >= rampDurationMs_) {
         enterPhase(WindPhase::Cruise, nowMs);
       }
-      // Early transition to ramp-down if we already need to stop
       {
         const float stopTurns = Ramp::stoppingTurns(
             static_cast<float>(motor_->actualRpmAbs() > 0 ? motor_->actualRpmAbs() : commandRpm_),
@@ -280,6 +319,18 @@ void WindingController::tick(uint32_t nowMs) {
     }
     case WindPhase::Cruise: {
       updateSetpoint(nowMs);
+#if WIND_TARGET_DEBUG
+      {
+        static uint32_t lastDbg = 0;
+        if (nowMs - lastDbg >= 500) {
+          lastDbg = nowMs;
+          Serial.printf("[AUTO] progress=%.2f rem=%.2f rpm=%u\n",
+                        turns_.turnsExact(),
+                        static_cast<double>(turns_.remainingCounts()) / SERVO_COUNTS_PER_REV,
+                        motor_->actualRpmAbs());
+        }
+      }
+#endif
       {
         const float stopTurns = Ramp::stoppingTurns(
             static_cast<float>(motor_->actualRpmAbs() > 0 ? motor_->actualRpmAbs() : commandRpm_),
@@ -301,6 +352,7 @@ void WindingController::tick(uint32_t nowMs) {
       if (timeDone || slow) {
         commandRpm_ = 0;
         motor_->softStop();
+        // Already at/past target handled by latch. Still short → same-dir approach.
         if (turns_.remainingCounts() <= FINAL_APPROACH_SKIP_COUNTS ||
             turns_.atTarget(FINAL_POSITION_TOLERANCE_COUNTS)) {
           enterPhase(WindPhase::Complete, nowMs);
@@ -311,35 +363,57 @@ void WindingController::tick(uint32_t nowMs) {
       break;
     }
     case WindPhase::FinalApproach: {
+      // Same-direction F6 only — NEVER F4 / never reverse for correction.
       if (!approachIssued_) {
-        const int32_t rel = remainingSigned();
-        if (llabs(rel) <= FINAL_APPROACH_SKIP_COUNTS) {
+        if (turns_.remainingCounts() <=
+            static_cast<uint64_t>(FINAL_APPROACH_SKIP_COUNTS)) {
           enterPhase(WindPhase::Complete, nowMs);
           break;
         }
-        approachIssued_ = motor_->startFinalApproach(rel);
+        approachIssued_ = motor_->commandFinalApproach(program_.direction);
+        commandRpm_ = FINAL_APPROACH_RPM;
         if (!approachIssued_) {
           faultText_ = "APPROACH FAIL";
           enterPhase(WindPhase::Fault, nowMs);
           break;
         }
-      }
-      if (turns_.atTarget(FINAL_POSITION_TOLERANCE_COUNTS) ||
-          turns_.remainingCounts() == 0 || motor_->actualRpmAbs() == 0) {
-        // Wait briefly for settle — non-blocking via remaining check
-        if (turns_.atTarget(FINAL_POSITION_TOLERANCE_COUNTS) ||
-            (motor_->actualRpmAbs() == 0 &&
-             turns_.remainingCounts() <= FINAL_POSITION_TOLERANCE_COUNTS * 2)) {
-          enterPhase(WindPhase::Complete, nowMs);
+      } else if (!targetReachedLatch_) {
+        // Re-issue same-dir speed periodically (F6 open-loop speed mode).
+        if (nowMs - lastSetpointMs_ >= MOTOR_COMMAND_UPDATE_MS) {
+          lastSetpointMs_ = nowMs;
+          // Stop slightly early to reduce overshoot — forward only.
+          if (turns_.remainingCounts() <=
+              static_cast<uint64_t>(FINAL_FORWARD_STOP_COMPENSATION_COUNTS)) {
+            commandStopOnly();
+            targetReachedLatch_ = true;
+#if WIND_TARGET_DEBUG
+            Serial.printf("[AUTO] TARGET REACHED (early stop) progress=%.3f\n",
+                          turns_.turnsExact());
+            Serial.println(F("[AUTO] STOP"));
+#endif
+            enterPhase(WindPhase::Complete, nowMs);
+            break;
+          }
+          motor_->commandFinalApproach(program_.direction);
         }
       }
-      // Timeout safety: if approach stalls too long
+
+      if (turns_.targetReached() || turns_.remainingCounts() == 0) {
+        commandStopOnly();
+        targetReachedLatch_ = true;
+        enterPhase(WindPhase::Complete, nowMs);
+        break;
+      }
+
       if (nowMs - rampStartMs_ > 30000UL) {
-        if (turns_.atTarget(FINAL_POSITION_TOLERANCE_COUNTS * 4)) {
+        if (turns_.atTarget(FINAL_POSITION_TOLERANCE_COUNTS * 4) ||
+            turns_.targetReached()) {
           enterPhase(WindPhase::Complete, nowMs);
         } else {
-          faultText_ = "APPROACH TIMEOUT";
-          enterPhase(WindPhase::Fault, nowMs);
+          // Prefer stop over endless crawl; slight shortfall is acceptable.
+          Serial.println(F("[AUTO] approach timeout — stopping"));
+          commandStopOnly();
+          enterPhase(WindPhase::Complete, nowMs);
         }
       }
       break;

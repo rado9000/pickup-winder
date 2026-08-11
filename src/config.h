@@ -115,6 +115,12 @@
 #define FINAL_APPROACH_RPM        40
 #define FINAL_POSITION_TOLERANCE_COUNTS  64
 #define FINAL_APPROACH_SKIP_COUNTS  32
+// Begin soft-stop slightly before exact target during same-direction
+// low-speed F6 final approach. NEVER used to reverse/correct.
+#define FINAL_FORWARD_STOP_COMPENSATION_COUNTS  64
+
+// Serial debug for winding target end (set 1 to enable)
+#define WIND_TARGET_DEBUG         1
 
 // --- Scheduler intervals (ms) ---
 #define INPUT_POLL_MS             1

@@ -71,6 +71,8 @@ class App {
   uint64_t manualTargetCounts_  = 0;
   bool     manualTargetEnabled_ = false;  // false when turns == 0 (unlimited)
   bool     manualApproachIssued_ = false;
+  bool     manualTargetReached_  = false; // latch: no more nonzero motion
+  WindDir  manualTargetFinishDir_ = WindDir::CW;  // locked at TargetBraking start
 
   // Internal FSM for physical motor state during reversal / target stop.
   enum class ManualPhase : uint8_t {
@@ -79,7 +81,7 @@ class App {
     Braking,         // motor braking toward zero (user direction change / click)
     Reversing,       // waiting for actual RPM ≤ threshold, then switch direction
     TargetBraking,   // turn-limit safety: decelerating toward target
-    TargetApproach,  // low-speed relative move to finish remaining counts
+    TargetApproach,  // low-speed F6 SAME-DIRECTION only (never F4 / reverse)
   };
   ManualPhase manualPhase_ = ManualPhase::Idle;
 

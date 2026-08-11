@@ -444,6 +444,8 @@ void App::enterManualMode() {
   manualAccelDir_       = 0;
   manualAccelStreak_    = 0;
   manualApproachIssued_ = false;
+  manualTargetReached_  = false;
+  manualTargetFinishDir_ = WindDir::CW;
 
   // 0 = unlimited free-running Manual; >0 enables encoder turn-limit stop.
   manualTargetEnabled_ = (manualTargetTurns_ > 0);
@@ -482,11 +484,19 @@ bool App::manualShouldStartTargetBrake(uint64_t remainingCounts, uint16_t actual
 }
 
 void App::finishManualTarget() {
+  manualTargetReached_  = true;
   manualTargetSigned_   = 0;
   manualPhase_          = ManualPhase::Idle;
   manualApproachIssued_ = false;
   motor_.softStop();
   motor_.idleSafe();
+#if WIND_TARGET_DEBUG
+  Serial.println(F("[MANUAL] TARGET REACHED"));
+  Serial.printf("[MANUAL] travel=%llu tgt=%llu\n",
+                static_cast<unsigned long long>(manualTravelCounts_),
+                static_cast<unsigned long long>(manualTargetCounts_));
+  Serial.println(F("[MANUAL] STOP"));
+#endif
   setState(AppState::ManualComplete);
 }
 
@@ -530,7 +540,16 @@ void App::tickManualMode(uint32_t nowMs) {
     return;
   }
 
-  // ── Turn-limit: reached? ─────────────────────────────────────────
+  // Once latched: only stop — never restart motion for this session.
+  if (manualTargetReached_) {
+    if (nowMs - lastManualCmdMs_ >= MANUAL_COMMAND_UPDATE_MS) {
+      lastManualCmdMs_ = nowMs;
+      servo_.speedStop(SERVO_SOFT_STOP_ACC);
+    }
+    return;
+  }
+
+  // ── Turn-limit: reached or passed? ───────────────────────────────
   if (manualTargetEnabled_ && remCounts == 0) {
     finishManualTarget();
     return;
@@ -541,10 +560,16 @@ void App::tickManualMode(uint32_t nowMs) {
       manualPhase_ != ManualPhase::TargetBraking &&
       manualPhase_ != ManualPhase::TargetApproach &&
       manualShouldStartTargetBrake(remCounts, actualRpm)) {
-    // Limit safety overrides user RPM request.
-    manualTargetSigned_   = 0;
-    manualApproachIssued_ = false;
-    manualPhase_          = ManualPhase::TargetBraking;
+    // Lock physical direction for the rest of target completion.
+    manualTargetFinishDir_ = manualMotorDir_;
+    manualTargetSigned_    = 0;
+    manualApproachIssued_  = false;
+    manualPhase_           = ManualPhase::TargetBraking;
+#if WIND_TARGET_DEBUG
+    Serial.printf("[MANUAL] target brake start rem=%.2f dir=%s\n",
+                  static_cast<double>(remCounts) / SERVO_COUNTS_PER_REV,
+                  manualTargetFinishDir_ == WindDir::CW ? "CW" : "CCW");
+#endif
   }
 
   const int16_t  tgt        = manualTargetSigned_;
@@ -599,52 +624,44 @@ void App::tickManualMode(uint32_t nowMs) {
       break;
 
     case ManualPhase::TargetBraking:
-      // Controlled deceleration for turn limit — user cannot re-accelerate.
+      // Controlled deceleration — direction locked, no reverse correction.
       if (nowMs - lastManualCmdMs_ >= MANUAL_COMMAND_UPDATE_MS) {
         lastManualCmdMs_ = nowMs;
         servo_.speedStop(SERVO_SOFT_STOP_ACC);
       }
       if (motorStop) {
-        if (remCounts <= static_cast<uint64_t>(FINAL_APPROACH_SKIP_COUNTS) ||
-            remCounts == 0) {
+        if (remCounts == 0 ||
+            remCounts <= static_cast<uint64_t>(FINAL_APPROACH_SKIP_COUNTS)) {
           finishManualTarget();
           return;
         }
+        // Still short of target → same-direction low-speed F6 approach.
         manualApproachIssued_ = false;
         manualPhase_ = ManualPhase::TargetApproach;
+#if WIND_TARGET_DEBUG
+        Serial.printf("[MANUAL] target approach dir=%s rem=%.2f\n",
+                      manualTargetFinishDir_ == WindDir::CW ? "CW" : "CCW",
+                      static_cast<double>(remCounts) / SERVO_COUNTS_PER_REV);
+#endif
       }
       break;
 
     case ManualPhase::TargetApproach: {
-      // Reuse Auto final-approach: relative encoder move at FINAL_APPROACH_RPM.
-      if (!manualApproachIssued_) {
-        int64_t rem = static_cast<int64_t>(remCounts);
-        if (rem > 2147483647LL) rem = 2147483647LL;
-        // F4 relative: positive = CW encoder space (same as Auto).
-        const int32_t rel = (manualMotorDir_ == WindDir::CW)
-                                ? static_cast<int32_t>(rem)
-                                : static_cast<int32_t>(-rem);
-        if (llabs(rel) <= FINAL_APPROACH_SKIP_COUNTS) {
-          finishManualTarget();
-          return;
-        }
-        manualApproachIssued_ = motor_.startFinalApproach(rel);
-        if (!manualApproachIssued_) {
-          // Approach command failed — soft-stop and complete best-effort.
-          finishManualTarget();
-          return;
-        }
+      // Low-speed F6 in locked winding direction ONLY. Never F4 / never reverse.
+      if (remCounts == 0) {
+        finishManualTarget();
+        return;
+      }
+      // Early forward stop compensation — reduces overshoot, never reverses.
+      if (remCounts <= static_cast<uint64_t>(FINAL_FORWARD_STOP_COMPENSATION_COUNTS)) {
+        finishManualTarget();
+        return;
+      }
+      if (nowMs - lastManualCmdMs_ >= MANUAL_COMMAND_UPDATE_MS) {
         lastManualCmdMs_ = nowMs;
-      }
-      if (remCounts == 0 ||
-          (motorStop && remCounts <= static_cast<uint64_t>(FINAL_POSITION_TOLERANCE_COUNTS * 2))) {
-        finishManualTarget();
-        return;
-      }
-      // Timeout safety (~30 s), same idea as Auto approach timeout.
-      if (nowMs - lastManualCmdMs_ > 30000UL) {
-        finishManualTarget();
-        return;
+        motor_.setDirection(manualTargetFinishDir_);
+        motor_.commandFinalApproach(manualTargetFinishDir_);
+        manualApproachIssued_ = true;
       }
       break;
     }

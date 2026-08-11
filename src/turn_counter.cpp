@@ -4,23 +4,8 @@
 #include <math.h>
 #include <stdlib.h>
 
-int64_t TurnCounter::targetDeltaCounts(uint32_t turns, WindDir dir) {
-  const int64_t mag = static_cast<int64_t>(turns) * SERVO_COUNTS_PER_REV;
-  // Manual 0x31: CW increases encoder, CCW decreases.
-  return (dir == WindDir::CW) ? mag : -mag;
-}
-
-double TurnCounter::countsToTurns(int64_t counts) {
-  return static_cast<double>(llabs(counts)) / static_cast<double>(SERVO_COUNTS_PER_REV);
-}
-
-int64_t TurnCounter::signedProgress(int64_t start, int64_t now, WindDir dir) {
-  const int64_t delta = now - start;
-  // Progress along commanded direction as non-negative magnitude in signed space.
-  if (dir == WindDir::CW) {
-    return delta;  // want positive
-  }
-  return -delta;  // CCW: encoder decreases, progress is -delta
+double TurnCounter::countsToTurns(uint64_t counts) {
+  return static_cast<double>(counts) / static_cast<double>(SERVO_COUNTS_PER_REV);
 }
 
 void TurnCounter::beginJob(int64_t encoderNow, uint32_t targetTurns, WindDir dir) {
@@ -28,23 +13,27 @@ void TurnCounter::beginJob(int64_t encoderNow, uint32_t targetTurns, WindDir dir
   currentEnc_ = encoderNow;
   targetTurns_ = targetTurns;
   dir_ = dir;
-  targetEnc_ = startEnc_ + targetDeltaCounts(targetTurns, dir);
 }
 
 void TurnCounter::update(int64_t encoderNow) {
   currentEnc_ = encoderNow;
 }
 
-int64_t TurnCounter::progressCounts() const {
-  return signedProgress(startEnc_, currentEnc_, dir_);
+uint64_t TurnCounter::targetCounts() const {
+  return static_cast<uint64_t>(targetTurns_) *
+         static_cast<uint64_t>(SERVO_COUNTS_PER_REV);
 }
 
-int64_t TurnCounter::remainingCounts() const {
-  const int64_t targetMag =
-      static_cast<int64_t>(targetTurns_) * SERVO_COUNTS_PER_REV;
-  const int64_t done = progressCounts();
-  const int64_t rem = targetMag - done;
-  return rem > 0 ? rem : 0;
+uint64_t TurnCounter::progressCounts() const {
+  const int64_t delta = currentEnc_ - startEnc_;
+  const int64_t absDelta = (delta < 0) ? -delta : delta;
+  return static_cast<uint64_t>(absDelta);
+}
+
+uint64_t TurnCounter::remainingCounts() const {
+  const uint64_t target = targetCounts();
+  const uint64_t done = progressCounts();
+  return (done >= target) ? 0ULL : (target - done);
 }
 
 double TurnCounter::turnsExact() const {
@@ -62,7 +51,17 @@ uint32_t TurnCounter::turnsDisplay() const {
   return static_cast<uint32_t>(t);
 }
 
+bool TurnCounter::targetReached() const {
+  return progressCounts() >= targetCounts();
+}
+
 bool TurnCounter::atTarget(int64_t toleranceCounts) const {
-  const int64_t err = llabs(currentEnc_ - targetEnc_);
-  return err <= toleranceCounts;
+  const uint64_t target = targetCounts();
+  const uint64_t done = progressCounts();
+  const uint64_t tol =
+      (toleranceCounts < 0) ? 0ULL : static_cast<uint64_t>(toleranceCounts);
+  if (done >= target) {
+    return true;  // at or past target — never "need reverse"
+  }
+  return (target - done) <= tol;
 }

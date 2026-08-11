@@ -19,7 +19,8 @@ class MotorController {
   bool quickStop();
   bool emergencyStop();
 
-  bool startFinalApproach(int32_t remainingSignedCounts);
+  // Same-direction low-speed F6 final approach — NEVER reverses for correction.
+  bool commandFinalApproach(WindDir dir);
 
   void pollTelemetry(uint32_t nowMs);
   bool encoderOk() const { return encoderOk_; }

@@ -44,7 +44,8 @@ class WindingController {
   void enterPhase(WindPhase p, uint32_t nowMs);
   void updateSetpoint(uint32_t nowMs);
   void checkFaults(uint32_t nowMs);
-  int32_t remainingSigned() const;
+  bool latchTargetReached(uint32_t nowMs);  // stop + Complete if past target
+  void commandStopOnly();
 
   MotorController* motor_ = nullptr;
   TurnCounter turns_;
@@ -66,6 +67,9 @@ class WindingController {
   bool resumeRequested_ = false;
   bool abortRequested_ = false;
   bool approachIssued_ = false;
+
+  // Once true for this job: never issue nonzero speed again — only STOP.
+  bool targetReachedLatch_ = false;
 
   const char* faultText_ = nullptr;
 };
