@@ -8,6 +8,7 @@
 #include "types.h"
 #include "ui.h"
 #include "winding_controller.h"
+#include "gauss_meter.h"
 
 class App {
  public:
@@ -21,10 +22,15 @@ class App {
   Input            input_;
   Ui               ui_;
   PresetStore      presets_;
+  GaussMeter       gauss_;
 
   AppState  state_      = AppState::Boot;
   Language  lang_       = Language::Polish;
   WindingProgram draft_{};
+
+  // After Settings → ZERO GAUSS, return here instead of MainMenu.
+  bool gaussCalReturnToSettings_ = false;
+  uint32_t gaussCalDoneMs_ = 0;
 
   // ── Preset name editor ──────────────────────────────────────────
   // Fixed-width buffer: positions 0..PRESET_NAME_LEN-1 hold editable chars
@@ -113,6 +119,14 @@ class App {
   void enterPresetEditNew();
   void enterPresetEditExisting();
   void savePresetName();
+
+  void enterGaussZeroCal(bool returnToSettings);
+  void finishGaussZeroCal();
+  bool motorActivityBlocksGaussOverlay() const;
+  bool shouldShowGaussOverlay() const;
+  bool isSafetyCriticalState() const;
+  void drawGaussOverlay();
+  void drawGaussCalibration();
 
   // Digit editor
   void formatTurnsDigits(char* out, unsigned n, bool blink) const;

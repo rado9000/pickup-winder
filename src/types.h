@@ -12,6 +12,7 @@ enum class WindDir : uint8_t { CW = 0, CCW = 1 };
 enum class AppState : uint8_t {
   Boot,
   BootError,
+  GaussZeroCal,       // AH49HZ3-G1 startup / Settings re-zero (no motor motion)
   MainMenu,
   Settings,
   Language,

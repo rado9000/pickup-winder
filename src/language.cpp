@@ -67,6 +67,12 @@ static const char* const kPl[] = {
     "HOLD: WYJDZ",         // ManualHoldBack
     "LIMIT ZWOJOW",        // ManualTurnLimit
     "BEZ LIMITU",          // Unlimited
+    "   POMIAR MAGNESU",   // MagnetMeasurement
+    "   SILA MAGNESU",     // MagnetStrength
+    " KALIBRACJA GAUSSA",  // GaussCalibration
+    "    USUN MAGNES",     // RemoveMagnet
+    "     ZERO OK",        // GaussZeroOk
+    "ZERO GAUSSA",         // ZeroGauss
 };
 
 static const char* const kEn[] = {
@@ -132,6 +138,12 @@ static const char* const kEn[] = {
     "HOLD: BACK",
     "TURN LIMIT",
     "UNLIMITED",
+    "    GAUSS METER",     // MagnetMeasurement
+    "  MAGNET STRENGTH",   // MagnetStrength
+    " GAUSS CALIBRATION",  // GaussCalibration
+    "   REMOVE MAGNET",    // RemoveMagnet
+    "     ZERO OK",        // GaussZeroOk
+    "ZERO GAUSS",          // ZeroGauss
 };
 
 static_assert(sizeof(kPl)/sizeof(kPl[0]) == static_cast<int>(StrId::COUNT), "PL count mismatch");

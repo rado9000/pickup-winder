@@ -3,23 +3,69 @@
 #include <Preferences.h>
 #include <stdio.h>
 #include <string.h>
+#include <Arduino.h>
 
 static Preferences prefs;
 static constexpr uint32_t kMagic = 0x50574E32;  // PWN2
+static constexpr const char* kNs = "pwinder2";
 
 void PresetStore::begin() {
+  migrateIfNeeded();
   loadCount();
 }
 
+void PresetStore::migrateIfNeeded() {
+  Language keepLang = Language::Polish;
+  uint8_t storedSchema = 0;
+  uint32_t magic = 0;
+
+  if (prefs.begin(kNs, true)) {
+    magic = prefs.getUInt("magic", 0);
+    storedSchema = prefs.getUChar("schema", 0);
+    const uint8_t v = prefs.getUChar("lang", 0);
+    keepLang = (v == 1) ? Language::English : Language::Polish;
+    prefs.end();
+  }
+
+  // Missing/unknown schema, wrong magic, or older firmware → one-time wipe.
+  if (magic != kMagic || storedSchema != PRESET_STORAGE_VERSION) {
+    Serial.printf("[NVS] preset schema %u -> %u; clearing legacy presets\n",
+                  static_cast<unsigned>(storedSchema),
+                  static_cast<unsigned>(PRESET_STORAGE_VERSION));
+    clearAllPresets(keepLang);
+  }
+}
+
+void PresetStore::clearAllPresets(Language keepLang) {
+  if (!prefs.begin(kNs, false)) {
+    count_ = 0;
+    return;
+  }
+  // Physically remove old preset blobs (do not leave stale pN keys).
+  for (uint8_t i = 0; i < PRESET_MAX_COUNT; i++) {
+    char key[8];
+    snprintf(key, sizeof key, "p%u", i);
+    prefs.remove(key);
+  }
+  prefs.putUInt("magic", kMagic);
+  prefs.putUChar("schema", PRESET_STORAGE_VERSION);
+  prefs.putUChar("count", 0);
+  prefs.putUChar("lang", static_cast<uint8_t>(keepLang));
+  prefs.end();
+  count_ = 0;
+  Serial.println(F("[NVS] presets cleared; language preserved"));
+}
+
 void PresetStore::loadCount() {
-  if (!prefs.begin("pwinder2", true)) {
+  if (!prefs.begin(kNs, true)) {
     count_ = 0;
     return;
   }
   const uint32_t magic = prefs.getUInt("magic", 0);
+  const uint8_t schema = prefs.getUChar("schema", 0);
   const uint8_t c = prefs.getUChar("count", 0);
   prefs.end();
-  if (magic != kMagic || c > PRESET_MAX_COUNT) {
+  if (magic != kMagic || schema != PRESET_STORAGE_VERSION || c > PRESET_MAX_COUNT) {
     count_ = 0;
     return;
   }
@@ -47,7 +93,7 @@ bool PresetStore::validate(const PresetRecord& p) const {
 
 bool PresetStore::readAt(uint8_t index, PresetRecord& out) const {
   Preferences r;
-  if (!r.begin("pwinder2", true)) {
+  if (!r.begin(kNs, true)) {
     return false;
   }
   char key[8];
@@ -67,7 +113,7 @@ bool PresetStore::readAt(uint8_t index, PresetRecord& out) const {
 }
 
 bool PresetStore::writeAt(uint8_t index, const PresetRecord& p) {
-  if (!prefs.begin("pwinder2", false)) {
+  if (!prefs.begin(kNs, false)) {
     return false;
   }
   char key[8];
@@ -95,10 +141,11 @@ bool PresetStore::saveNew(const PresetRecord& p) {
     return false;
   }
   count_++;
-  if (!prefs.begin("pwinder2", false)) {
+  if (!prefs.begin(kNs, false)) {
     return false;
   }
   prefs.putUInt("magic", kMagic);
+  prefs.putUChar("schema", PRESET_STORAGE_VERSION);
   prefs.putUChar("count", count_);
   prefs.end();
   return true;
@@ -126,19 +173,25 @@ bool PresetStore::remove(uint8_t index) {
       return false;
     }
   }
-  count_--;
-  if (!prefs.begin("pwinder2", false)) {
-    return false;
+  // Remove trailing slot so stale blobs cannot resurrect.
+  if (prefs.begin(kNs, false)) {
+    char key[8];
+    snprintf(key, sizeof key, "p%u", count_ - 1);
+    prefs.remove(key);
+    count_--;
+    prefs.putUInt("magic", kMagic);
+    prefs.putUChar("schema", PRESET_STORAGE_VERSION);
+    prefs.putUChar("count", count_);
+    prefs.end();
+  } else {
+    count_--;
   }
-  prefs.putUInt("magic", kMagic);
-  prefs.putUChar("count", count_);
-  prefs.end();
   return true;
 }
 
 Language PresetStore::loadLanguage() const {
   Preferences r;
-  if (!r.begin("pwinder2", true)) {
+  if (!r.begin(kNs, true)) {
     return Language::Polish;
   }
   const uint8_t v = r.getUChar("lang", 0);
@@ -147,10 +200,11 @@ Language PresetStore::loadLanguage() const {
 }
 
 void PresetStore::saveLanguage(Language lang) {
-  if (!prefs.begin("pwinder2", false)) {
+  if (!prefs.begin(kNs, false)) {
     return;
   }
   prefs.putUChar("lang", static_cast<uint8_t>(lang));
   prefs.putUInt("magic", kMagic);
+  prefs.putUChar("schema", PRESET_STORAGE_VERSION);
   prefs.end();
 }

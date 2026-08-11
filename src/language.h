@@ -65,6 +65,12 @@ enum class StrId : uint8_t {
   ManualHoldBack,    // hint while stopped (long-press = exit)
   ManualTurnLimit,   // "LIMIT ZWOJOW" / "TURN LIMIT"
   Unlimited,         // "BEZ LIMITU" / "UNLIMITED"
+  MagnetMeasurement, // "POMIAR MAGNESU" / "GAUSS METER"
+  MagnetStrength,    // "SILA MAGNESU" / "MAGNET STRENGTH"
+  GaussCalibration,  // "KALIBRACJA GAUSSA" / "GAUSS CALIBRATION"
+  RemoveMagnet,      // "USUN MAGNES" / "REMOVE MAGNET"
+  GaussZeroOk,       // "ZERO OK" / "ZERO OK"
+  ZeroGauss,         // settings — "ZERO GAUSSA" / "ZERO GAUSS"
   COUNT
 };
 

@@ -23,6 +23,8 @@ class PresetStore {
  private:
   uint8_t count_ = 0;
   void loadCount();
+  void migrateIfNeeded();
+  void clearAllPresets(Language keepLang);
   bool readAt(uint8_t index, PresetRecord& out) const;
   bool writeAt(uint8_t index, const PresetRecord& p);
   bool validate(const PresetRecord& p) const;

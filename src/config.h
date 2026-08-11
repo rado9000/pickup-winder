@@ -18,11 +18,41 @@
 #define PIN_ENC_DT                11
 #define PIN_ENC_SW                12
 
-// Future Gauss ADC (DISABLED). GPIO13 intentionally free.
+// AH49HZ3-G1 / 49HG bipolar linear Hall sensor
+// VCC = 3.3 V, OUT -> ESP32-S3 GPIO1, ~100 nF to GND (hardware RC filter).
+// GPIO13 intentionally free.
 #define PIN_GAUSS_ADC             1
 #define PIN_UNUSED_13             13
 
-#define ENABLE_GAUSS_METER        0
+#define ENABLE_GAUSS_METER        1
+
+// --- Gauss meter (AH49HZ3-G1) ---
+#define GAUSS_SAMPLE_MS                  5
+
+#define GAUSS_ZERO_SETTLE_MS             500
+#define GAUSS_ZERO_CALIBRATION_MS        1500
+#define GAUSS_ZERO_DEADBAND_COUNTS       5
+
+// EMA alpha after a small median window (0..1). Higher = faster, noisier.
+#define GAUSS_FILTER_ALPHA               0.15f
+
+// TEMPORARY — calibrate using reference magnet:
+//   GAUSS_G_PER_ADC_COUNT = knownGauss / abs(magnetRaw - zeroRaw)
+#define GAUSS_G_PER_ADC_COUNT            1.0f
+
+#define GAUSS_TRIGGER_G                  100.0f
+#define GAUSS_RELEASE_G                   70.0f
+
+#define GAUSS_TRIGGER_HOLD_MS            120
+#define GAUSS_RELEASE_HOLD_MS            500
+
+// 1 = allow full-screen Gauss overlay while motor is running
+#define GAUSS_OVERLAY_DURING_MOTOR_RUN   1
+
+#define GAUSS_DEBUG                      0
+
+// Preset NVS schema — bump to force one-time wipe of legacy preset records.
+#define PRESET_STORAGE_VERSION           3
 
 // --- LCD ---
 #define LCD_I2C_ADDR              0x27

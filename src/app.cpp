@@ -125,11 +125,108 @@ void App::begin() {
   servo_.begin();
   motor_.begin(&servo_);
   winding_.begin(&motor_);
+#if ENABLE_GAUSS_METER
+  gauss_.begin();
+#endif
 
   draft_    = WindingProgram{};
   bootStep_ = 0;
   bootStepMs_= millis();
   setState(AppState::Boot);
+}
+
+void App::enterGaussZeroCal(bool returnToSettings) {
+  gaussCalReturnToSettings_ = returnToSettings;
+  gaussCalDoneMs_ = 0;
+#if ENABLE_GAUSS_METER
+  gauss_.startZeroCalibration();
+  setState(AppState::GaussZeroCal);
+#else
+  finishGaussZeroCal();
+#endif
+}
+
+void App::finishGaussZeroCal() {
+  if (gaussCalReturnToSettings_) {
+    gaussCalReturnToSettings_ = false;
+    menuIndex_ = 0;
+    setState(AppState::Settings);
+  } else {
+    menuIndex_  = 0;
+    menuWindow_ = 0;
+    setState(AppState::MainMenu);
+  }
+}
+
+bool App::isSafetyCriticalState() const {
+  return state_ == AppState::BootError || state_ == AppState::ErrorState;
+}
+
+bool App::motorActivityBlocksGaussOverlay() const {
+#if !GAUSS_OVERLAY_DURING_MOTOR_RUN
+  if (state_ == AppState::Winding || state_ == AppState::Countdown) return true;
+  if (state_ == AppState::ManualMode &&
+      (manualPhase_ == ManualPhase::Running ||
+       manualPhase_ == ManualPhase::Braking ||
+       manualPhase_ == ManualPhase::Reversing ||
+       manualPhase_ == ManualPhase::TargetBraking ||
+       manualPhase_ == ManualPhase::TargetApproach ||
+       manualTargetSigned_ != 0 ||
+       motor_.actualRpmAbs() > MANUAL_STOPPED_RPM)) {
+    return true;
+  }
+#endif
+  return false;
+}
+
+bool App::shouldShowGaussOverlay() const {
+#if !ENABLE_GAUSS_METER
+  return false;
+#else
+  if (!gauss_.calibrationComplete() || !gauss_.calibrationValid()) return false;
+  if (!gauss_.overlayRequested()) return false;
+  if (isSafetyCriticalState()) return false;
+  if (state_ == AppState::Boot || state_ == AppState::GaussZeroCal) return false;
+  if (state_ == AppState::Countdown) return false;
+  if (motorActivityBlocksGaussOverlay()) return false;
+  return true;
+#endif
+}
+
+void App::drawGaussCalibration() {
+  ui_.setLine(0, tr(lang_, StrId::GaussCalibration));
+  ui_.setLine(1, "");
+  ui_.setLine(2, tr(lang_, StrId::RemoveMagnet));
+  // Simple activity dots while calibrating.
+  const uint8_t phase = static_cast<uint8_t>((millis() / 300) % 4);
+  char dots[21] = "       ";
+  for (uint8_t i = 0; i < 3; i++) {
+    dots[7 + i] = (i <= phase) ? '.' : ' ';
+  }
+  dots[10] = '\0';
+  if (gauss_.calibrationComplete()) {
+    ui_.setLine(3, tr(lang_, StrId::GaussZeroOk));
+  } else {
+    ui_.setLine(3, dots);
+  }
+}
+
+void App::drawGaussOverlay() {
+  // Professional user screen — no RAW/ZERO/DELTA diagnostics.
+  ui_.setLine(0, tr(lang_, StrId::MagnetMeasurement));
+  ui_.setLine(1, "");
+  ui_.setLine(2, tr(lang_, StrId::MagnetStrength));
+
+  const float g = gauss_.gauss();
+  char line[21];
+  if (fabsf(g) < 0.5f) {
+    snprintf(line, sizeof line, "    0 GAUSS");
+  } else {
+    const int gi = static_cast<int>(lroundf(g));
+    snprintf(line, sizeof line, "  %+d GAUSS", gi);
+  }
+  // Center-ish within 20 cols.
+  ui_.setLine(3, line);
 }
 
 void App::handleBoot(uint32_t nowMs) {
@@ -157,10 +254,14 @@ void App::handleBoot(uint32_t nowMs) {
     ui_.setLine(1, tr(lang_, StrId::SystemReady));
     ui_.setLine(2, "");
     ui_.setLine(3, "");
-    delay(300);
+    delay(200);
+#if ENABLE_GAUSS_METER
+    enterGaussZeroCal(false);
+#else
     menuIndex_  = 0;
     menuWindow_ = 0;
     setState(AppState::MainMenu);
+#endif
   }
 }
 
@@ -588,8 +689,30 @@ void App::render(uint32_t nowMs) {
                        state_ == AppState::PresetEdit ||
                        state_ == AppState::ManualTurnsSetup);
   const uint32_t refreshMs = isEdit ? 100u : LCD_UPDATE_MS;
-  if (nowMs - lastLcdMs_ < refreshMs && state_ != AppState::Countdown) return;
+  if (nowMs - lastLcdMs_ < refreshMs && state_ != AppState::Countdown &&
+      state_ != AppState::GaussZeroCal) {
+    return;
+  }
   lastLcdMs_ = nowMs;
+
+  // Priority: ERROR > Gauss calibration > Countdown > Gauss overlay > normal UI
+  if (isSafetyCriticalState()) {
+    ui_.drawError(lang_, tr(lang_, StrId::MotorError),
+                  errorLine_ ? errorLine_ : tr(lang_, StrId::NoRs485));
+    return;
+  }
+  if (state_ == AppState::GaussZeroCal) {
+    drawGaussCalibration();
+    return;
+  }
+  if (state_ == AppState::Countdown) {
+    ui_.drawCountdown(countdown_);
+    return;
+  }
+  if (shouldShowGaussOverlay()) {
+    drawGaussOverlay();
+    return;
+  }
 
   switch (state_) {
 
@@ -607,11 +730,12 @@ void App::render(uint32_t nowMs) {
 
     // ── SETTINGS ──────────────────────────────────────────────────
     case AppState::Settings: {
-      const char* items[3] = {tr(lang_, StrId::Language),
+      const char* items[4] = {tr(lang_, StrId::Language),
                               tr(lang_, StrId::Diagnostics),
+                              tr(lang_, StrId::ZeroGauss),
                               tr(lang_, StrId::Back)};
-      clampMenuWindow(menuIndex_, 3, menuWindow_);
-      ui_.drawMenu(lang_, items, 3, menuIndex_, menuWindow_);
+      clampMenuWindow(menuIndex_, 4, menuWindow_);
+      ui_.drawMenu(lang_, items, 4, menuIndex_, menuWindow_);
       break;
     }
     case AppState::Language: {
@@ -805,6 +929,9 @@ void App::render(uint32_t nowMs) {
       ui_.drawError(lang_, tr(lang_, StrId::MotorError),
                     errorLine_ ? errorLine_ : tr(lang_, StrId::NoRs485));
       break;
+    case AppState::GaussZeroCal:
+      drawGaussCalibration();
+      break;
     default: break;
   }
 }
@@ -825,8 +952,18 @@ void App::handleInput(uint32_t nowMs) {
   static const char kCharSet[] = " ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789-_";
   static const int  kCharN     = 39;
 
+  const bool gaussOverlay = shouldShowGaussOverlay();
+
   // ── ROTATION ─────────────────────────────────────────────────────
   if (dir != 0) {
+    // While Gauss overlay covers menus/editors, do not move selections underneath.
+    // Manual RPM control remains available (motor safety / workshop use).
+    const bool blockMenuEnc = gaussOverlay &&
+        state_ != AppState::ManualMode &&
+        state_ != AppState::Winding &&
+        state_ != AppState::Paused;
+
+    if (!blockMenuEnc) {
     switch (state_) {
       // Menus with NO acceleration: always 1 step.
       case AppState::MainMenu:
@@ -834,8 +971,8 @@ void App::handleInput(uint32_t nowMs) {
         else         menuIndex_ = (menuIndex_ == 0) ? 3 : menuIndex_ - 1;
         break;
       case AppState::Settings:
-        if (dir > 0) menuIndex_ = static_cast<uint8_t>((menuIndex_ + 1) % 3);
-        else         menuIndex_ = (menuIndex_ == 0) ? 2 : menuIndex_ - 1;
+        if (dir > 0) menuIndex_ = static_cast<uint8_t>((menuIndex_ + 1) % 4);
+        else         menuIndex_ = (menuIndex_ == 0) ? 3 : menuIndex_ - 1;
         break;
       case AppState::Language:
         menuIndex_ = (menuIndex_ == 0) ? 1 : 0;
@@ -913,16 +1050,27 @@ void App::handleInput(uint32_t nowMs) {
       }
       default: break;
     }
+    }  // !blockMenuEnc
   }
 
   // ── LONG PRESS ───────────────────────────────────────────────────
+  // Safety controls remain active even while Gauss overlay is visible.
   if (btn == ButtonEvent::LongPress) {
+    const bool blockMenuLong = gaussOverlay &&
+        state_ != AppState::ManualMode &&
+        state_ != AppState::Winding &&
+        state_ != AppState::Paused;
+    if (blockMenuLong) {
+      // Ignore menu long-press under overlay (do not save/exit menus).
+    } else
     switch (state_) {
       case AppState::MainMenu:   break;  // top-level, no parent
       case AppState::Settings:
       case AppState::Language:
       case AppState::Diagnostics:
         menuIndex_ = 0; setState(AppState::MainMenu); break;
+      case AppState::GaussZeroCal:
+        break;  // wait for calibration to finish
       case AppState::AutoEdit:
         setState(AppState::MainMenu); break;
       case AppState::ManualTurnsSetup:
@@ -958,7 +1106,18 @@ void App::handleInput(uint32_t nowMs) {
   }
 
   // ── SHORT CLICK ──────────────────────────────────────────────────
+  // Safety clicks still work under Gauss overlay; menu clicks do not.
   if (btn == ButtonEvent::Click) {
+    const bool blockMenuClick = gaussOverlay &&
+        state_ != AppState::ManualMode &&
+        state_ != AppState::Winding &&
+        state_ != AppState::Paused &&
+        state_ != AppState::BootError &&
+        state_ != AppState::ErrorState;
+
+    if (blockMenuClick) {
+      // Swallow click so underlying menu/editor does not advance.
+    } else
     switch (state_) {
       case AppState::BootError:
         bootStep_ = 0; setState(AppState::Boot); break;
@@ -976,6 +1135,7 @@ void App::handleInput(uint32_t nowMs) {
       case AppState::Settings:
         if      (menuIndex_ == 0) { menuIndex_ = (lang_ == Language::Polish) ? 0 : 1; setState(AppState::Language); }
         else if (menuIndex_ == 1) { motor_.detect(); setState(AppState::Diagnostics); }
+        else if (menuIndex_ == 2) { enterGaussZeroCal(true); }
         else                       setState(AppState::MainMenu);
         break;
       case AppState::Language:
@@ -1065,8 +1225,30 @@ void App::loop() {
     input_.update(now);
   }
 
+#if ENABLE_GAUSS_METER
+  // Lower priority than motor control — sample after input, before heavy UI.
+  gauss_.update(now);
+#endif
+
   if (state_ == AppState::Boot) {
     handleBoot(now);
+    return;
+  }
+
+  if (state_ == AppState::GaussZeroCal) {
+#if ENABLE_GAUSS_METER
+    if (gauss_.calibrationComplete()) {
+      if (gaussCalDoneMs_ == 0) gaussCalDoneMs_ = now;
+      if (now - gaussCalDoneMs_ >= 400) {
+        gaussCalDoneMs_ = 0;
+        finishGaussZeroCal();
+      }
+    }
+#else
+    finishGaussZeroCal();
+#endif
+    handleInput(now);
+    render(now);
     return;
   }
 
