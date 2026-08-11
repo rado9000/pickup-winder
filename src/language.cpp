@@ -65,6 +65,8 @@ static const char* const kPl[] = {
     "ZWOJE:",              // ManualTurns
     "KLIK:STOP HOLD:WYJ",  // ManualClickStop
     "HOLD: WYJDZ",         // ManualHoldBack
+    "LIMIT ZWOJOW",        // ManualTurnLimit
+    "BEZ LIMITU",          // Unlimited
 };
 
 static const char* const kEn[] = {
@@ -128,6 +130,8 @@ static const char* const kEn[] = {
     "TURNS:",
     "CLICK:STOP HOLD:BCK",
     "HOLD: BACK",
+    "TURN LIMIT",
+    "UNLIMITED",
 };
 
 static_assert(sizeof(kPl)/sizeof(kPl[0]) == static_cast<int>(StrId::COUNT), "PL count mismatch");

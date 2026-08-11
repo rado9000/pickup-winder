@@ -1,10 +1,12 @@
 #include "app.h"
 #include "config.h"
+#include "ramp_generator.h"
 
 #include <Arduino.h>
 #include <stdio.h>
 #include <string.h>
 #include <stdlib.h>
+#include <math.h>
 
 // ─────────────────────────────────────────────────────────────────────────────
 // UI acceleration policy helpers — NEVER called inside the input module
@@ -181,6 +183,9 @@ void App::enterPresetEditNew() {
   digitPos_  = 0;
   editingPreset_ = false;
   saveAsNew_     = true;
+  // Clear any stale rename/edit buffer immediately so NEW always starts as PRESET.
+  namePos_ = 0;
+  initNameBuf("PRESET");
   setState(AppState::PresetEdit);
 }
 
@@ -209,6 +214,14 @@ uint8_t App::digitsForField(uint8_t field) const {
 void App::formatTurnsDigits(char* out, unsigned n, bool blink) const {
   snprintf(out, n, "%05lu", static_cast<unsigned long>(draft_.targetTurns));
   if (blink && editField_ == 0 && ((millis() / 400) & 1)) {
+    const int idx = TURNS_DIGITS - 1 - static_cast<int>(digitPos_);
+    if (idx >= 0 && static_cast<unsigned>(idx) + 1 < n) out[idx] = '_';
+  }
+}
+
+void App::formatManualTurnsDigits(char* out, unsigned n, bool blink) const {
+  snprintf(out, n, "%05lu", static_cast<unsigned long>(manualTargetTurns_));
+  if (blink && ((millis() / 400) & 1)) {
     const int idx = TURNS_DIGITS - 1 - static_cast<int>(digitPos_);
     if (idx >= 0 && static_cast<unsigned>(idx) + 1 < n) out[idx] = '_';
   }
@@ -260,6 +273,20 @@ void App::adjustActiveDigit(int dir) {
   else if (editField_ == 6) draft_.direction    = (draft_.direction    == WindDir::CW) ? WindDir::CCW : WindDir::CW;
 }
 
+void App::adjustManualTurnsDigit(int dir) {
+  // Same digit-by-digit philosophy as Auto, but 00000 is allowed (unlimited).
+  uint32_t value = manualTargetTurns_;
+  uint32_t placeVal = 1;
+  for (uint8_t i = 0; i < digitPos_; i++) placeVal *= 10;
+  int32_t digit = static_cast<int32_t>((value / placeVal) % 10) + dir;
+  if (digit > 9) digit = 0;
+  if (digit < 0) digit = 9;
+  value = (value / (placeVal * 10)) * (placeVal * 10) + (value % placeVal)
+          + static_cast<uint32_t>(digit) * placeVal;
+  if (value > MAX_TURNS) value = MAX_TURNS;
+  manualTargetTurns_ = value;
+}
+
 void App::onEditClick() {
   const uint8_t digs = digitsForField(editField_);
   if (digs > 0) {
@@ -270,10 +297,24 @@ void App::onEditClick() {
   // Field 7 = Start / Save
   if (state_ == AppState::PresetEdit) {
     namePos_ = 0;
-    if (!editingPreset_) initNameBuf("PRESET");
+    if (saveAsNew_) {
+      // NEW preset: always force the editable default, never reuse stale buffer
+      // and never copy the LCD title ("NAZWA PRESETU" / "PRESET NAME").
+      initNameBuf("PRESET");
+    } else if (!editingPreset_) {
+      initNameBuf("PRESET");
+    }
+    // editing existing: nameBuf_ already loaded in enterPresetEditExisting()
     setState(AppState::PresetName);
   } else {
     setState(AppState::StartConfirm);
+  }
+}
+
+void App::onManualTurnsSetupClick() {
+  if (++digitPos_ >= TURNS_DIGITS) {
+    digitPos_ = 0;
+    enterManualMode();
   }
 }
 
@@ -281,14 +322,26 @@ void App::onEditClick() {
 // TRUE MANUAL MODE
 // ─────────────────────────────────────────────────────────────────────────────
 
+void App::enterManualTurnsSetup() {
+  manualTargetTurns_ = DEFAULT_MANUAL_TURNS;
+  digitPos_          = 0;
+  setState(AppState::ManualTurnsSetup);
+}
+
 void App::enterManualMode() {
-  manualTargetSigned_  = 0;
-  manualPhase_         = ManualPhase::Idle;
-  manualMotorDir_      = WindDir::CW;
-  manualExitPending_   = false;
-  manualTravelCounts_  = 0;
-  manualAccelDir_      = 0;
-  manualAccelStreak_   = 0;
+  manualTargetSigned_   = 0;
+  manualPhase_          = ManualPhase::Idle;
+  manualMotorDir_       = WindDir::CW;
+  manualExitPending_    = false;
+  manualTravelCounts_   = 0;
+  manualAccelDir_       = 0;
+  manualAccelStreak_    = 0;
+  manualApproachIssued_ = false;
+
+  // 0 = unlimited free-running Manual; >0 enables encoder turn-limit stop.
+  manualTargetEnabled_ = (manualTargetTurns_ > 0);
+  manualTargetCounts_  = static_cast<uint64_t>(manualTargetTurns_) *
+                         static_cast<uint64_t>(SERVO_COUNTS_PER_REV);
 
   motor_.prepareForWinding();
 
@@ -298,6 +351,36 @@ void App::enterManualMode() {
   lastManualCmdMs_ = 0;
   lastManualTelMs_ = 0;
   setState(AppState::ManualMode);
+}
+
+uint64_t App::manualRemainingCounts() const {
+  if (!manualTargetEnabled_) return UINT64_C(0xFFFFFFFFFFFFFFFF);
+  if (manualTravelCounts_ >= manualTargetCounts_) return 0;
+  return manualTargetCounts_ - manualTravelCounts_;
+}
+
+bool App::manualShouldStartTargetBrake(uint64_t remainingCounts, uint16_t actualRpm) const {
+  if (!manualTargetEnabled_) return false;
+  // Reuse Auto stopping-distance prediction (Ramp::stoppingTurns + compensation).
+  const float stopTurns = Ramp::stoppingTurns(
+      static_cast<float>(actualRpm),
+      MANUAL_TARGET_RAMP_DOWN_MS / 1000.0f);
+  const double needTurns =
+      static_cast<double>(stopTurns) +
+      (static_cast<double>(STOP_COMPENSATION_COUNTS) /
+       static_cast<double>(SERVO_COUNTS_PER_REV));
+  const uint64_t needCounts =
+      static_cast<uint64_t>(needTurns * static_cast<double>(SERVO_COUNTS_PER_REV) + 0.5);
+  return remainingCounts <= needCounts;
+}
+
+void App::finishManualTarget() {
+  manualTargetSigned_   = 0;
+  manualPhase_          = ManualPhase::Idle;
+  manualApproachIssued_ = false;
+  motor_.softStop();
+  motor_.idleSafe();
+  setState(AppState::ManualComplete);
 }
 
 // Returns |manualTargetSigned_| clamped to MAX_WINDER_RPM
@@ -313,22 +396,17 @@ void App::tickManualMode(uint32_t nowMs) {
     lastManualTelMs_ = nowMs;
     motor_.pollTelemetry(nowMs);
 
-    // Accumulate absolute travel (ignoring direction).
-    const int64_t encNow  = motor_.encoder();
-    const int64_t delta   = encNow - manualEncPrev_;
-    const int64_t absDelta= (delta < 0) ? -delta : delta;
-    // Guard against uint32 overflow (unlikely during one session).
-    if (manualTravelCounts_ + static_cast<uint32_t>(absDelta) > manualTravelCounts_) {
-      manualTravelCounts_ += static_cast<uint32_t>(absDelta);
-    }
+    // Accumulate absolute physical travel (CW + CCW both count toward limit).
+    const int64_t encNow   = motor_.encoder();
+    const int64_t delta    = encNow - manualEncPrev_;
+    const int64_t absDelta = (delta < 0) ? -delta : delta;
+    manualTravelCounts_ += static_cast<uint64_t>(absDelta);
     manualEncPrev_ = encNow;
   }
 
   const uint16_t actualRpm  = motor_.actualRpmAbs();
   const bool     motorStop  = (actualRpm <= MANUAL_STOPPED_RPM);
-  const int16_t  tgt        = manualTargetSigned_;
-  const bool     tgtCw      = (tgt > 0);
-  const bool     tgtStop    = (tgt == 0);
+  const uint64_t remCounts  = manualRemainingCounts();
 
   // ── Exit pending: stop first, then leave ─────────────────────────
   if (manualExitPending_) {
@@ -338,13 +416,33 @@ void App::tickManualMode(uint32_t nowMs) {
       setState(AppState::MainMenu);
       return;
     }
-    // Keep decelerating.
     if (nowMs - lastManualCmdMs_ >= MANUAL_COMMAND_UPDATE_MS) {
       lastManualCmdMs_ = nowMs;
       servo_.speedStop(SERVO_SOFT_STOP_ACC);
     }
     return;
   }
+
+  // ── Turn-limit: reached? ─────────────────────────────────────────
+  if (manualTargetEnabled_ && remCounts == 0) {
+    finishManualTarget();
+    return;
+  }
+
+  // ── Turn-limit: begin controlled stop before overshoot ───────────
+  if (manualTargetEnabled_ &&
+      manualPhase_ != ManualPhase::TargetBraking &&
+      manualPhase_ != ManualPhase::TargetApproach &&
+      manualShouldStartTargetBrake(remCounts, actualRpm)) {
+    // Limit safety overrides user RPM request.
+    manualTargetSigned_   = 0;
+    manualApproachIssued_ = false;
+    manualPhase_          = ManualPhase::TargetBraking;
+  }
+
+  const int16_t  tgt        = manualTargetSigned_;
+  const bool     tgtCw      = (tgt > 0);
+  const bool     tgtStop    = (tgt == 0);
 
   // ── Manual FSM ───────────────────────────────────────────────────
   switch (manualPhase_) {
@@ -358,15 +456,12 @@ void App::tickManualMode(uint32_t nowMs) {
       break;
 
     case ManualPhase::Running: {
-      // Check if direction changed
       const bool runningCw = (manualMotorDir_ == WindDir::CW);
       if (!tgtStop && (tgtCw != runningCw)) {
-        // User requested opposite direction — start braking.
         manualPhase_ = ManualPhase::Braking;
       } else if (tgtStop) {
         manualPhase_ = ManualPhase::Braking;
       } else {
-        // Same direction: push commanded RPM.
         if (nowMs - lastManualCmdMs_ >= MANUAL_COMMAND_UPDATE_MS) {
           lastManualCmdMs_ = nowMs;
           servo_.speedRun(runningCw, absClamped(tgt), SERVO_INTERNAL_ACC);
@@ -389,17 +484,66 @@ void App::tickManualMode(uint32_t nowMs) {
       if (tgtStop) {
         manualPhase_ = ManualPhase::Idle;
       } else {
-        // Switch physical direction now that motor is stopped.
         manualMotorDir_ = tgtCw ? WindDir::CW : WindDir::CCW;
         motor_.setDirection(manualMotorDir_);
         manualPhase_ = ManualPhase::Running;
-        // Force immediate command next tick.
         lastManualCmdMs_ = 0;
       }
       break;
+
+    case ManualPhase::TargetBraking:
+      // Controlled deceleration for turn limit — user cannot re-accelerate.
+      if (nowMs - lastManualCmdMs_ >= MANUAL_COMMAND_UPDATE_MS) {
+        lastManualCmdMs_ = nowMs;
+        servo_.speedStop(SERVO_SOFT_STOP_ACC);
+      }
+      if (motorStop) {
+        if (remCounts <= static_cast<uint64_t>(FINAL_APPROACH_SKIP_COUNTS) ||
+            remCounts == 0) {
+          finishManualTarget();
+          return;
+        }
+        manualApproachIssued_ = false;
+        manualPhase_ = ManualPhase::TargetApproach;
+      }
+      break;
+
+    case ManualPhase::TargetApproach: {
+      // Reuse Auto final-approach: relative encoder move at FINAL_APPROACH_RPM.
+      if (!manualApproachIssued_) {
+        int64_t rem = static_cast<int64_t>(remCounts);
+        if (rem > 2147483647LL) rem = 2147483647LL;
+        // F4 relative: positive = CW encoder space (same as Auto).
+        const int32_t rel = (manualMotorDir_ == WindDir::CW)
+                                ? static_cast<int32_t>(rem)
+                                : static_cast<int32_t>(-rem);
+        if (llabs(rel) <= FINAL_APPROACH_SKIP_COUNTS) {
+          finishManualTarget();
+          return;
+        }
+        manualApproachIssued_ = motor_.startFinalApproach(rel);
+        if (!manualApproachIssued_) {
+          // Approach command failed — soft-stop and complete best-effort.
+          finishManualTarget();
+          return;
+        }
+        lastManualCmdMs_ = nowMs;
+      }
+      if (remCounts == 0 ||
+          (motorStop && remCounts <= static_cast<uint64_t>(FINAL_POSITION_TOLERANCE_COUNTS * 2))) {
+        finishManualTarget();
+        return;
+      }
+      // Timeout safety (~30 s), same idea as Auto approach timeout.
+      if (nowMs - lastManualCmdMs_ > 30000UL) {
+        finishManualTarget();
+        return;
+      }
+      break;
+    }
   }
 
-  // If somehow stopped with no target, ensure idle.
+  // If somehow stopped with no target, ensure idle (user stop path only).
   if (manualPhase_ == ManualPhase::Running && tgtStop) {
     manualPhase_ = ManualPhase::Braking;
   }
@@ -440,7 +584,9 @@ static void buildNameCursorLine(int pos, char* out) {
 }
 
 void App::render(uint32_t nowMs) {
-  const bool isEdit = (state_ == AppState::AutoEdit || state_ == AppState::PresetEdit);
+  const bool isEdit = (state_ == AppState::AutoEdit ||
+                       state_ == AppState::PresetEdit ||
+                       state_ == AppState::ManualTurnsSetup);
   const uint32_t refreshMs = isEdit ? 100u : LCD_UPDATE_MS;
   if (nowMs - lastLcdMs_ < refreshMs && state_ != AppState::Countdown) return;
   lastLcdMs_ = nowMs;
@@ -511,6 +657,19 @@ void App::render(uint32_t nowMs) {
       break;
     }
 
+    // ── MANUAL TURN LIMIT SETUP ───────────────────────────────────
+    case AppState::ManualTurnsSetup: {
+      ui_.setLine(0, tr(lang_, StrId::ManualTitle));
+      ui_.setLine(1, tr(lang_, StrId::ManualTurnLimit));
+      char digits[8];
+      formatManualTurnsDigits(digits, sizeof digits, true);
+      ui_.setLine(2, digits);
+      ui_.setLine(3, (manualTargetTurns_ == 0)
+                         ? tr(lang_, StrId::Unlimited)
+                         : tr(lang_, StrId::HoldBack));
+      break;
+    }
+
     // ── MANUAL MODE ───────────────────────────────────────────────
     case AppState::ManualMode: {
       // Derive display direction from signed target.
@@ -534,11 +693,39 @@ void App::render(uint32_t nowMs) {
       snprintf(l2, sizeof l2, "%-5s%9u RPM", tr(lang_, StrId::ManualAct), motor_.actualRpmAbs());
       ui_.setLine(2, l2);
 
-      // Line 3: "ZWOJE:        1234  "
-      const uint32_t travelTurns = manualTravelCounts_ / static_cast<uint32_t>(SERVO_COUNTS_PER_REV);
+      // Line 3: "ZWOJE: 1234/8000" or "ZWOJE: 1234/----"
+      const uint32_t travelTurns = static_cast<uint32_t>(
+          manualTravelCounts_ / static_cast<uint64_t>(SERVO_COUNTS_PER_REV));
       char l3[21];
-      snprintf(l3, sizeof l3, "%-7s%13lu", tr(lang_, StrId::ManualTurns), static_cast<unsigned long>(travelTurns));
+      if (!manualTargetEnabled_) {
+        snprintf(l3, sizeof l3, "%-6s%5lu/----",
+                 tr(lang_, StrId::ManualTurns),
+                 static_cast<unsigned long>(travelTurns));
+      } else {
+        snprintf(l3, sizeof l3, "%-6s%5lu/%-5lu",
+                 tr(lang_, StrId::ManualTurns),
+                 static_cast<unsigned long>(travelTurns),
+                 static_cast<unsigned long>(manualTargetTurns_));
+      }
       ui_.setLine(3, l3);
+      break;
+    }
+
+    case AppState::ManualComplete: {
+      //     GOTOWE
+      //   8000 / 8000
+      // TRYB RECZNY
+      // KLIK: PONOW
+      char title[21];
+      snprintf(title, sizeof title, "    %s", tr(lang_, StrId::Complete));
+      ui_.setLine(0, title);
+      char counts[21];
+      snprintf(counts, sizeof counts, "  %lu / %lu",
+               static_cast<unsigned long>(manualTargetTurns_),
+               static_cast<unsigned long>(manualTargetTurns_));
+      ui_.setLine(1, counts);
+      ui_.setLine(2, tr(lang_, StrId::ManualTitle));
+      ui_.setLine(3, tr(lang_, StrId::ClickAgain));
       break;
     }
 
@@ -680,6 +867,10 @@ void App::handleInput(uint32_t nowMs) {
         adjustActiveDigit(dir);  // step=1, wraps 0-9
         break;
 
+      case AppState::ManualTurnsSetup:
+        adjustManualTurnsDigit(dir);  // 1 detent = 1 digit, 00000 allowed
+        break;
+
       // Preset name: conservative acceleration.
       case AppState::PresetName: {
         const int step = accelStepName(det.speed);
@@ -694,8 +885,13 @@ void App::handleInput(uint32_t nowMs) {
       }
 
       // Manual: signed RPM with dedicated human-speed accel + zero clamp.
+      // During target braking/approach, encoder must not re-accelerate.
       case AppState::ManualMode: {
-        if (manualExitPending_) break;  // encoder frozen while exiting
+        if (manualExitPending_) break;
+        if (manualPhase_ == ManualPhase::TargetBraking ||
+            manualPhase_ == ManualPhase::TargetApproach) {
+          break;  // turn-limit safety owns the motor
+        }
         const int step = manualRpmStep(det);
         int32_t next = static_cast<int32_t>(manualTargetSigned_) + dir * step;
 
@@ -729,6 +925,8 @@ void App::handleInput(uint32_t nowMs) {
         menuIndex_ = 0; setState(AppState::MainMenu); break;
       case AppState::AutoEdit:
         setState(AppState::MainMenu); break;
+      case AppState::ManualTurnsSetup:
+        setState(AppState::MainMenu); break;
       case AppState::PresetList:
         menuIndex_ = 0; setState(AppState::MainMenu); break;
       case AppState::PresetActions:
@@ -747,6 +945,8 @@ void App::handleInput(uint32_t nowMs) {
         winding_.requestAbort(); break;
       case AppState::Complete:
       case AppState::Aborted:
+        setState(AppState::MainMenu); break;
+      case AppState::ManualComplete:
         setState(AppState::MainMenu); break;
       case AppState::ManualMode:
         // Single long-press: stop + exit when safe.
@@ -768,7 +968,7 @@ void App::handleInput(uint32_t nowMs) {
       case AppState::MainMenu:
         menuWindow_ = 0;
         if      (menuIndex_ == 0) enterAutoEdit();
-        else if (menuIndex_ == 1) enterManualMode();
+        else if (menuIndex_ == 1) enterManualTurnsSetup();
         else if (menuIndex_ == 2) { menuIndex_ = 0; setState(AppState::PresetList); }
         else                       { menuIndex_ = 0; setState(AppState::Settings); }
         break;
@@ -790,11 +990,20 @@ void App::handleInput(uint32_t nowMs) {
       case AppState::PresetEdit:
         onEditClick(); break;
 
+      case AppState::ManualTurnsSetup:
+        onManualTurnsSetupClick(); break;
+
       case AppState::ManualMode:
-        // Click = controlled stop (target → 0). Do NOT exit.
+        // Click = controlled stop (target → 0). Do NOT exit / reset turns.
+        // Also allowed during target braking to request earlier stop (already 0).
         if (!manualExitPending_) {
           manualTargetSigned_ = 0;
         }
+        break;
+
+      case AppState::ManualComplete:
+        // Same turn limit, fresh session at 0 RPM (counter resets in enterManualMode).
+        enterManualMode();
         break;
 
       case AppState::PresetList: {

@@ -63,6 +63,8 @@ enum class StrId : uint8_t {
   ManualTurns,
   ManualClickStop,   // hint while running
   ManualHoldBack,    // hint while stopped (long-press = exit)
+  ManualTurnLimit,   // "LIMIT ZWOJOW" / "TURN LIMIT"
+  Unlimited,         // "BEZ LIMITU" / "UNLIMITED"
   COUNT
 };
 

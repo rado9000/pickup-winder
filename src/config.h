@@ -60,9 +60,13 @@
 #define MIN_TURNS                 1UL
 
 #define DEFAULT_TURNS             8000UL
+#define DEFAULT_MANUAL_TURNS      8000UL  // Manual turn-limit setup default
 #define DEFAULT_RPM               1000
 #define DEFAULT_RAMP_UP_MS        2000
 #define DEFAULT_RAMP_DOWN_MS      3000
+// Predicted Manual target-stop distance uses this ramp-down time with
+// Ramp::stoppingTurns(), then soft-stop + final approach (same idea as Auto).
+#define MANUAL_TARGET_RAMP_DOWN_MS  DEFAULT_RAMP_DOWN_MS
 #define RAMP_TIME_MIN_MS          100
 #define RAMP_TIME_MAX_MS          20000
 #define RAMP_TIME_STEP_MS         100

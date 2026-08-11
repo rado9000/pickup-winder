@@ -60,12 +60,20 @@ class App {
   // Range: -MAX_WINDER_RPM .. +MAX_WINDER_RPM.
   int16_t  manualTargetSigned_ = 0;
 
-  // Internal FSM for physical motor state during reversal.
+  // Turn limit (0 = unlimited). Set in ManualTurnsSetup before each session.
+  uint32_t manualTargetTurns_   = DEFAULT_MANUAL_TURNS;
+  uint64_t manualTargetCounts_  = 0;
+  bool     manualTargetEnabled_ = false;  // false when turns == 0 (unlimited)
+  bool     manualApproachIssued_ = false;
+
+  // Internal FSM for physical motor state during reversal / target stop.
   enum class ManualPhase : uint8_t {
-    Idle,        // motor stopped, no command pending
-    Running,     // motor commanded in same direction as target
-    Braking,     // motor braking toward zero (target changed sign)
-    Reversing,   // waiting for actual RPM ≤ threshold, then switch direction
+    Idle,            // motor stopped, no command pending
+    Running,         // motor commanded in same direction as target
+    Braking,         // motor braking toward zero (user direction change / click)
+    Reversing,       // waiting for actual RPM ≤ threshold, then switch direction
+    TargetBraking,   // turn-limit safety: decelerating toward target
+    TargetApproach,  // low-speed relative move to finish remaining counts
   };
   ManualPhase manualPhase_ = ManualPhase::Idle;
 
@@ -75,7 +83,7 @@ class App {
   // Accumulated |travel| since entering Manual (CW + CCW combined).
   int64_t  manualEncStart_  = 0;   // encoder at session start
   int64_t  manualEncPrev_   = 0;   // encoder at last poll
-  uint32_t manualTravelCounts_ = 0;// unsigned accumulated counts
+  uint64_t manualTravelCounts_ = 0;// absolute accumulated counts
 
   // Pending safe exit: set on long-press; firmware exits once motor stops.
   bool     manualExitPending_ = false;
@@ -95,8 +103,12 @@ class App {
   void startCountdown();
 
   void enterAutoEdit();
+  void enterManualTurnsSetup();
   void enterManualMode();
   void tickManualMode(uint32_t nowMs);
+  void finishManualTarget();
+  bool manualShouldStartTargetBrake(uint64_t remainingCounts, uint16_t actualRpm) const;
+  uint64_t manualRemainingCounts() const;
 
   void enterPresetEditNew();
   void enterPresetEditExisting();
@@ -104,10 +116,13 @@ class App {
 
   // Digit editor
   void formatTurnsDigits(char* out, unsigned n, bool blink) const;
+  void formatManualTurnsDigits(char* out, unsigned n, bool blink) const;
   void formatRpmDigits(char* out, unsigned n, bool blink) const;
   void formatRampTenthsDigits(char* out, unsigned n, uint16_t ms, bool blink) const;
   void adjustActiveDigit(int dir);
+  void adjustManualTurnsDigit(int dir);
   void onEditClick();
+  void onManualTurnsSetupClick();
   uint8_t digitsForField(uint8_t field) const;
 
   // Encoder UI policies
