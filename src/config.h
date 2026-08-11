@@ -93,7 +93,12 @@
 // 4 ms suppresses contact bounce without missing slow detents.
 #define ENC_DEBOUNCE_US           4000
 
+// Invert logical detent direction once at the input layer.
+// 1 = CW increases values / moves down menus; 0 = raw Gray-code sense.
+#define ENCODER_INVERT_DIRECTION  1
+
 // Velocity acceleration — inter-detent timing thresholds (ms).
+// Used by menus / names / lists (NOT Manual RPM — see MANUAL_ACCEL_*).
 // >ENC_SLOW_THRESHOLD_MS  → SLOW (x1); idle timeout counts as SLOW.
 // 80-150 ms               → MEDIUM
 // 40-80 ms                → FAST
@@ -121,12 +126,25 @@
 #define RPM_DIGITS                4
 #define RAMP_TENTHS_DIGITS        3
 
-// --- Manual mode ---
-// RPM step per logical detent, by velocity band.
-#define MANUAL_RPM_STEP_SLOW      1
-#define MANUAL_RPM_STEP_MEDIUM    5
-#define MANUAL_RPM_STEP_FAST      10
-#define MANUAL_RPM_STEP_VERY_FAST 25
+// --- Manual mode — dedicated human-hand RPM acceleration ---
+// Tuned for finger rotation of a 20-detent mechanical encoder.
+// Independent of ENC_* menu/name classifier thresholds.
+//
+//   SLOW:       dt >= MANUAL_ACCEL_SLOW_MS     → 1 RPM / detent
+//   NORMAL:     MANUAL_ACCEL_NORMAL_MS .. SLOW → 5 RPM / detent
+//   FAST:       MANUAL_ACCEL_FAST_MS .. NORMAL → 20 RPM / detent
+//   VERY FAST: dt <  MANUAL_ACCEL_FAST_MS     → 50 RPM / detent
+#define MANUAL_ACCEL_SLOW_MS          170
+#define MANUAL_ACCEL_NORMAL_MS        100
+#define MANUAL_ACCEL_FAST_MS           60
+
+#define MANUAL_RPM_STEP_SLOW            1
+#define MANUAL_RPM_STEP_NORMAL          5
+#define MANUAL_RPM_STEP_FAST           20
+#define MANUAL_RPM_STEP_VERY_FAST      50
+
+// Consecutive same-direction non-slow detents before Manual accel engages.
+#define MANUAL_ACCEL_STREAK_REQUIRED    2
 
 // Minimum actual RPM considered "stopped" for direction-change safety.
 #define MANUAL_STOPPED_RPM        8

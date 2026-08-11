@@ -10,13 +10,38 @@
 // UI acceleration policy helpers — NEVER called inside the input module
 // ─────────────────────────────────────────────────────────────────────────────
 
-int App::accelStepManualRpm(EncSpeed spd) const {
-  switch (spd) {
-    case EncSpeed::Medium:   return MANUAL_RPM_STEP_MEDIUM;
-    case EncSpeed::Fast:     return MANUAL_RPM_STEP_FAST;
-    case EncSpeed::VeryFast: return MANUAL_RPM_STEP_VERY_FAST;
-    default:                 return MANUAL_RPM_STEP_SLOW;
+int App::manualRpmStep(const EncDetent& det) {
+  // Dedicated Manual policy based on det.dtMs + short same-direction streak.
+  // Does NOT use the global EncSpeed classifier (menus/names stay precise).
+  const bool idle = (det.dtMs >= static_cast<uint32_t>(ENC_ACCEL_RESET_MS));
+  const bool reversed = (manualAccelDir_ != 0 && det.dir != 0 &&
+                         det.dir != manualAccelDir_);
+
+  if (idle || reversed || det.dir == 0) {
+    manualAccelStreak_ = 1;
+  } else {
+    if (manualAccelStreak_ < 255) manualAccelStreak_++;
   }
+  if (det.dir != 0) manualAccelDir_ = det.dir;
+
+  // Slow deliberate rotation — always 1 RPM, regardless of streak.
+  if (idle || det.dtMs >= static_cast<uint32_t>(MANUAL_ACCEL_SLOW_MS)) {
+    return MANUAL_RPM_STEP_SLOW;
+  }
+
+  // Need a short continuous same-direction burst before accelerating.
+  // First detent after idle/reversal stays at 1; ~2 fast detents unlock accel.
+  if (manualAccelStreak_ < MANUAL_ACCEL_STREAK_REQUIRED) {
+    return MANUAL_RPM_STEP_SLOW;
+  }
+
+  if (det.dtMs >= static_cast<uint32_t>(MANUAL_ACCEL_NORMAL_MS)) {
+    return MANUAL_RPM_STEP_NORMAL;
+  }
+  if (det.dtMs >= static_cast<uint32_t>(MANUAL_ACCEL_FAST_MS)) {
+    return MANUAL_RPM_STEP_FAST;
+  }
+  return MANUAL_RPM_STEP_VERY_FAST;
 }
 
 int App::accelStepName(EncSpeed spd) const {
@@ -262,6 +287,8 @@ void App::enterManualMode() {
   manualMotorDir_      = WindDir::CW;
   manualExitPending_   = false;
   manualTravelCounts_  = 0;
+  manualAccelDir_      = 0;
+  manualAccelStreak_   = 0;
 
   motor_.prepareForWinding();
 
@@ -606,7 +633,9 @@ void App::handleInput(uint32_t nowMs) {
   const int         dir = det.dir;
 
   // Character set for name editor.
-  static const char kCharSet[] = "ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789 -_";
+  // SPACE sits immediately before A so spaces are one detent from letters.
+  // Order: SPACE, A-Z, 0-9, '-', '_'
+  static const char kCharSet[] = " ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789-_";
   static const int  kCharN     = 39;
 
   // ── ROTATION ─────────────────────────────────────────────────────
@@ -664,10 +693,10 @@ void App::handleInput(uint32_t nowMs) {
         break;
       }
 
-      // Manual: signed RPM with zero-crossing clamp.
+      // Manual: signed RPM with dedicated human-speed accel + zero clamp.
       case AppState::ManualMode: {
         if (manualExitPending_) break;  // encoder frozen while exiting
-        const int step = accelStepManualRpm(det.speed);
+        const int step = manualRpmStep(det);
         int32_t next = static_cast<int32_t>(manualTargetSigned_) + dir * step;
 
         // Clamp to valid range.

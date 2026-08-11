@@ -71,7 +71,15 @@ void Input::processStep(int8_t step, uint32_t nowMs) {
     return;  // incomplete detent
   }
 
-  const int8_t dir = (step > 0) ? +1 : -1;
+  // Raw Gray-code sense, then optional global logical inversion.
+  // Applied once here — before streak, lastDir_, and pending detent —
+  // so every UI context sees the same natural CW/CCW mapping.
+  const int8_t rawDir = (step > 0) ? static_cast<int8_t>(+1)
+                                   : static_cast<int8_t>(-1);
+  const int8_t dir = ENCODER_INVERT_DIRECTION
+                         ? static_cast<int8_t>(-rawDir)
+                         : rawDir;
+
   const uint32_t dtMs = (nowMs > lastDetentMs_) ? (nowMs - lastDetentMs_) : 0;
 
   // Reset streak on idle or direction change.

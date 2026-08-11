@@ -80,6 +80,10 @@ class App {
   // Pending safe exit: set on long-press; firmware exits once motor stops.
   bool     manualExitPending_ = false;
 
+  // Dedicated Manual RPM accel confidence (independent of EncSpeed streak).
+  int8_t   manualAccelDir_    = 0;
+  uint8_t  manualAccelStreak_ = 0;
+
   uint32_t lastManualCmdMs_  = 0;
   uint32_t lastManualTelMs_  = 0;
 
@@ -107,7 +111,7 @@ class App {
   uint8_t digitsForField(uint8_t field) const;
 
   // Encoder UI policies
-  int accelStepManualRpm(EncSpeed spd) const;
+  int manualRpmStep(const EncDetent& det);
   int accelStepName(EncSpeed spd) const;
 
   // Name buffer helpers
